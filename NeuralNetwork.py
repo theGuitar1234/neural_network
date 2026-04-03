@@ -70,6 +70,11 @@ class NeuralNetwork:
         INVERSE_DECAY = 2
         EXPONENTIAL_DECAY = 3
     
+    class Datasets(Enum):
+        NPZ = 1
+        JSON = 2
+        PICKLE = 3
+    
     @dataclass(frozen=True)
     class TrainDefaults:
         learning_rate: float = 1e-3
@@ -87,7 +92,7 @@ class NeuralNetwork:
         output_aware_multiplier: int = 4
         expansion_multiplier: int = 2
     
-    @dataclass(frozen=True)
+    @dataclass
     class TrainResults:
         losses: list = None
         val_losses: list = None
@@ -98,19 +103,24 @@ class NeuralNetwork:
         accuracy: float = 0.0
         final_learning_rate: float = 0.0
         figure_title: str = "Training Results"
+    
+    @dataclass
+    class Paths:
         model_path: str = "models/"
         csv_path: str = "data/csv/"
         npz_path: str = "data/npz/"
         json_path: str = "data/json/"
+        pickle_path: str = "data/pickle/"
         default_data: str = "Untitled"
     
-    @dataclass(frozen=True)
+    @dataclass
     class Extensions:
         csv: str = ".csv"
         npz: str = ".npz"
         json: str = ".json"
+        pickle: str = ".pkl"
     
-    @dataclass(frozen=True)
+    @dataclass
     class Encodings:
         UTF_8: str = "utf_8"
 
@@ -1229,15 +1239,89 @@ class NeuralNetwork:
             "X_test": X_test,
             "Y_test": Y_test,
         }
+    
+    @classmethod
+    def save_to_pickle(cls, dataset, filename=None):
+        if filename is None:
+            filename = cls.TrainResults().default_data 
+        if not filename.endswith(cls.Extensions.pickle):
+            filename = filename + cls.Extensions.pickle
+        pickle_file_path = cls.TrainResults().pickle_path
+        if pickle_file_path is not None and not os.path.exists(pickle_file_path):
+            os.mkdir(pickle_file_path)
+        
+        filepath = pickle_file_path + filename
+        
+        with open(filepath, "wb") as f:
+            pickle.dump(dataset, f)
+    
+    @classmethod
+    def load_from_pickle(cls, filepath):
+        with open(filepath, "rb") as f:
+            dataset = pickle.load(f)
+        return dataset
 
-if __name__ == "__main__":    
-    datasets = NeuralNetwork.load_from_npz('data/npz/MNIST.npz')
-    X_train = datasets["X_train"]
-    Y_train = datasets["Y_train"]
-    X_valid = datasets["X_valid"]
-    Y_valid = datasets["Y_valid"]
-    X_test = datasets["X_test"]
-    Y_test = datasets["Y_test"]
+    @classmethod
+    def prepare_datasets(cls, dataset, number_of_classes):
+        X_train = dataset["X_train"]
+        Y_train = dataset["Y_train"]
+
+        X_valid = dataset["X_valid"]
+        Y_valid = dataset["Y_valid"]
+
+        X_test = dataset["X_test"]
+        Y_test = dataset["Y_test"]
+
+        Y_train_one_hot = cls.one_hot_encode(Y_train, number_of_classes)
+        Y_valid_one_hot = cls.one_hot_encode(Y_valid, number_of_classes)
+        Y_test_one_hot = cls.one_hot_encode(Y_test, number_of_classes)
+
+        return {
+            "X_train": X_train,
+            "Y_train": Y_train_one_hot,
+            "X_valid": X_valid,
+            "Y_valid": Y_valid_one_hot,
+            "X_test": X_test,
+            "Y_test": Y_test_one_hot,
+        }
+    
+    @classmethod
+    def load_dataset(cls, file_type, file_path):
+        match file_type:
+            case cls.Datasets.NPZ:
+                return cls.load_from_npz(file_path)
+            case cls.Datasets.JSON:
+                return cls.load_from_json(file_path)
+            case cls.Datasets.PICKLE:
+                return cls.load_from_pickle(file_path)
+            case _:
+                raise ValueError(f"Unknown File Type, supported ones are : {cls.Datasets.NPZ}, {cls.Datasets.PICKLE}, {cls.Datasets.JSON}")
+    @classmethod
+    def load_csv_datasets(cls, folder):
+        X_train, Y_train = cls.load_from_csv(f"{folder}/train.csv")
+        X_valid, Y_valid = cls.load_from_csv(f"{folder}/valid.csv")
+        X_test, Y_test = cls.load_from_csv(f"{folder}/test.csv")
+
+        return {
+            "X_train": X_train,
+            "Y_train": Y_train,
+            "X_valid": X_valid,
+            "Y_valid": Y_valid,
+            "X_test": X_test,
+            "Y_test": Y_test,
+        }
+
+if __name__ == "__main__":
+    number_of_classes = 10
+    dataset = NeuralNetwork.load_from_npz('data/npz/MNIST.npz')
+    prepared_dataset = NeuralNetwork.prepare_datasets(dataset, number_of_classes)
+    
+    X_train = prepared_dataset["X_train"]
+    Y_train = prepared_dataset["Y_train"]
+    X_valid = prepared_dataset["X_valid"]
+    Y_valid = prepared_dataset["Y_valid"]
+    X_test = prepared_dataset["X_test"]
+    Y_test = prepared_dataset["Y_test"]
 
     # NeuralNetwork.save_to_csv(X_train, Y_train, "train.csv")
     # NeuralNetwork.save_to_csv(X_valid, Y_valid, "valid.csv")
@@ -1245,17 +1329,20 @@ if __name__ == "__main__":
     
     # X_train, Y_train = NeuralNetwork.load_from_csv("data/csv/train.csv")
     
-    dataset = NeuralNetwork.load_from_npz("data/npz/MNIST.npz")
-    NeuralNetwork.save_to_json(dataset, "mnist.json")
+    # dataset = NeuralNetwork.load_from_npz("data/npz/MNIST.npz")
+    # NeuralNetwork.save_to_json(dataset, "mnist.json")
+    
+    # dataset = load_npz_mnist("data/MNIST.npz")
+    # save_dataset_to_pickle(dataset, "data_pickle/mnist_dataset.pkl")
 
-    Y_train_one_hot = NeuralNetwork.one_hot_encode(Y_train, 10)
-    Y_valid_one_hot = NeuralNetwork.one_hot_encode(Y_valid, 10)
-    Y_test_one_hot = NeuralNetwork.one_hot_encode(Y_test, 10)
+    # Y_train_one_hot = NeuralNetwork.one_hot_encode(Y_train, 10)
+    # Y_valid_one_hot = NeuralNetwork.one_hot_encode(Y_valid, 10)
+    # Y_test_one_hot = NeuralNetwork.one_hot_encode(Y_test, 10)
 
     limit = 100
 
     X_train_small = X_train[:limit]
-    Y_train_small = Y_train_one_hot[:limit]
+    Y_train_small = Y_train[:limit]
 
     model = NeuralNetwork(
         X_train.shape[1],
@@ -1265,11 +1352,11 @@ if __name__ == "__main__":
         hidden_activation_type=NeuralNetwork.HiddenActivationType.LEAKY_RELU
     )
 
-    results = model.train(X_train_small, Y_train_small, X_valid, Y_valid_one_hot, finalize=True, l2=True, dropout=True, graph=True)
+    results = model.train(X_train_small, Y_train_small, X_valid, Y_valid, finalize=True, l2=True, dropout=True, graph=True)
     model.save("mnist_small")
 
     loaded_model = NeuralNetwork.load("mnist_small.pkl")
     
     if loaded_model is not None:
-        results = loaded_model.evaluate_dataset(X_test, Y_test_one_hot)
+        results = loaded_model.evaluate_dataset(X_test, Y_test)
         print(results[1])
