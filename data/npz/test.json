@@ -1,0 +1,8 @@
+{
+  "train": [
+    {"features": [0.0, 0.1], "label": 7},
+    {"features": [0.2, 0.3], "label": 2}
+  ],
+  "valid": [],
+  "test": []
+}

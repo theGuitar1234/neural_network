@@ -1180,7 +1180,7 @@ class NeuralNetwork:
         return records
     
     @classmethod
-    def save_to_json(cls, dataset, filename, _encoding=None):
+    def save_to_json(cls, dataset, filename=None, _encoding=None):
         if filename is None:
             filename = cls.TrainResults().default_data 
         if not filename.endswith(cls.Extensions.json):
@@ -1202,6 +1202,33 @@ class NeuralNetwork:
 
         with open(filepath, "w", encoding=_encoding) as f:
             json.dump(json_data, f)
+    
+    @classmethod
+    def records_to_split(cls, records):
+        X = np.array([r["features"] for r in records], dtype=np.float32)
+        Y = np.array([r["labels"] for r in records], dtype=np.int64)
+        return X, Y
+    
+    @classmethod
+    def load_from_json(cls, filepath, _encoding=None):
+        if _encoding is None:
+            _encoding = cls.Encodings.UTF_8
+            
+        with open(filepath, "r", encoding=_encoding) as f:
+            data = json.load(f)
+        
+        X_train, Y_train = cls.records_to_split(data["train"])
+        X_valid, Y_valid = cls.records_to_split(data["valid"])
+        X_test, Y_test = cls.records_to_split(data["test"])
+
+        return {
+            "X_train": X_train,
+            "Y_train": Y_train,
+            "X_valid": X_valid,
+            "Y_valid": Y_valid,
+            "X_test": X_test,
+            "Y_test": Y_test,
+        }
 
 if __name__ == "__main__":    
     datasets = NeuralNetwork.load_from_npz('data/npz/MNIST.npz')
