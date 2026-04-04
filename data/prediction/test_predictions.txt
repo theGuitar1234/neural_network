@@ -1,8 +1,8 @@
-Sample : [0], Prediction : [0] correct
-Sample : [0], Prediction : [0] correct
-Sample : [0], Prediction : [0] correct
-Sample : [0], Prediction : [0] correct
-Sample : [0], Prediction : [0] correct
+Sample : [0], Prediction : [1] failed
+Sample : [0], Prediction : [1] failed
+Sample : [0], Prediction : [1] failed
+Sample : [0], Prediction : [1] failed
+Sample : [0], Prediction : [1] failed
 Sample : [1], Prediction : [1] correct
 Sample : [1], Prediction : [1] correct
 Sample : [1], Prediction : [1] correct

@@ -123,3 +123,10 @@ np.savez(
 
 # print("True label counts:", model.tp_cpu(xp.bincount(true_classes, minlength=10)))
 # print("Pred label counts:", model.tp_cpu(xp.bincount(pred_classes, minlength=10)))
+
+# X_test = loaded_model.to_device(X_test, dtype=loaded_model.xp.float32)
+# Y_test = loaded_model.to_device(Y_test, dtype=loaded_model.xp.float32)
+
+# if loaded_model is not None:
+#     results = loaded_model.evaluate_dataset(X_test, Y_test)
+#     print(results[1])

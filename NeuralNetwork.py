@@ -100,6 +100,7 @@ class NeuralNetwork:
         start_width_heuristic_cap: int = 512
         output_aware_multiplier: int = 4
         expansion_multiplier: int = 2
+        prediction_tolerance: int = 100
         prediction_threshold: int = 1000
     
     @dataclass
@@ -311,6 +312,8 @@ class NeuralNetwork:
         model_cpu = copy.copy(self)
         model_cpu.on_gpu = False
         model_cpu._NeuralNetwork__WB = [(W.copy(), b.copy()) for W, b in self.to_cpu_WB()]
+        model_cpu._NeuralNetwork__init_random_range = None
+        model_cpu._NeuralNetwork__cache = []
         return model_cpu
     
     def move_to(self, device):
@@ -352,7 +355,20 @@ class NeuralNetwork:
         return self.__hidden_activation_type
     
     @classmethod
-    def init_layers(cls, X, number_of_hidden_layers, output_width=None, start_width=None, hidden_width=None, parameter_budget=None, layer_strategy=None, start_width_heurist=None, start_width_heuristic_cap=512, output_aware_multiplier=4, expansion_multiplier=2):
+    def init_layers(
+        cls, 
+        X, 
+        number_of_hidden_layers, 
+        output_width=None, 
+        start_width=None, 
+        hidden_width=None, 
+        parameter_budget=None, 
+        layer_strategy=None, 
+        start_width_heurist=None, 
+        start_width_heuristic_cap=512, 
+        output_aware_multiplier=4, 
+        expansion_multiplier=2
+    ):
         if layer_strategy is None:
             layer_strategy = cls.LayerStrategies.GEOMETRIC_TAPER
         if start_width_heurist is None:
@@ -881,10 +897,12 @@ class NeuralNetwork:
 
     def train(
         self, 
-        X, 
-        Y, 
-        X_val, 
-        Y_val,
+        X_train, 
+        Y_train, 
+        X_valid, 
+        Y_valid,
+        X_test,
+        Y_test,
         log=True,
         graph=True,
         finalize=False,
@@ -894,18 +912,17 @@ class NeuralNetwork:
         dropout=False,
         l2=False,
         cfg=None, 
-        _encoding=None,
         learning_decay_type=None,
         data_augmentation_type=None,
     ):
         xp = self.xp
-        if X.ndim != 2:
+        if X_train.ndim != 2:
             raise ValueError("X must be 2D: (samples, features)")
-        if Y.ndim != 2:
+        if Y_train.ndim != 2:
             raise ValueError("Y must be 2D: (samples, outputs)")
-        if X.shape[0] != Y.shape[0]:
+        if X_train.shape[0] != Y_train.shape[0]:
             raise ValueError("X and Y must have the same number of samples")
-        if X.shape[1] != self.__WB[0][0].shape[1]:
+        if X_train.shape[1] != self.__WB[0][0].shape[1]:
             raise ValueError("X feature count does not match model input size")
 
         if cfg is None:
@@ -928,9 +945,11 @@ class NeuralNetwork:
             validation_prediction_file = tr.validation_prediction_file
             test_prediction_file = tr.test_prediction_file
             prediction_path = tr.prediction_path
+            prediction_tolerance = cfg.prediction_tolerance
             prediction_threshold = cfg.prediction_threshold
+            _encoding=self.Encodings().UTF_8
 
-        base_m = X.shape[0]
+        base_m = X_train.shape[0]
 
         best_val_loss = float("inf")
         best_WB = copy.deepcopy(self.__WB)
@@ -973,12 +992,12 @@ class NeuralNetwork:
             train_reg_loss = 0.0
             train_total_loss = train_data_loss + train_reg_loss
 
-            X_shuf, Y_shuf = self.shuffle_dataset(X, Y, base_m, random_range)
+            X_shuffle, Y_shuffle = self.shuffle_dataset(X_train, Y_train, base_m, random_range)
 
             if data_augmentation_type is not None:
-                X_epoch, Y_epoch = self.data_augmentation(X_shuf, Y_shuf, data_augmentation_type, random_range)
+                X_epoch, Y_epoch = self.data_augmentation(X_shuffle, Y_shuffle, data_augmentation_type, random_range)
             else:
-                X_epoch, Y_epoch = X_shuf, Y_shuf
+                X_epoch, Y_epoch = X_shuffle, Y_shuffle
             
             epoch_m = X_epoch.shape[0]
 
@@ -992,15 +1011,9 @@ class NeuralNetwork:
 
                 if dropout:
                     A, cache, activation_cache, M = self.forward_pass(X_batch, cfg=cfg, training_mode=True)
-                else:
-                    A, cache, activation_cache, M = self.forward_pass(X_batch, cfg=None, training_mode=False)
-
-                batch_loss = self.loss(Y_batch, A, epsilon)
-                train_data_loss += batch_loss * (end - batch_start)
-
-                if dropout:
                     grads = self.backward_propagation(Y_batch, cache, activation_cache, M, cfg=cfg, training_mode=True)
                 else:
+                    A, cache, activation_cache, M = self.forward_pass(X_batch, cfg=None, training_mode=False)
                     grads = self.backward_propagation(Y_batch, cache, activation_cache, M, cfg=None, training_mode=False)
                 
                 if l2:
@@ -1015,6 +1028,9 @@ class NeuralNetwork:
                     self.update_parameters(grads_with_L2, current_lr)
                 else:
                     self.update_parameters(grads, current_lr)
+                
+                batch_loss = self.loss(Y_batch, A, epsilon)
+                train_data_loss += batch_loss * (end - batch_start)
             
             train_data_loss = train_data_loss / epoch_m
             # train_reg_loss = (l2_lambda / 2) * self.sum_weight_squares(self.__WB)
@@ -1022,7 +1038,7 @@ class NeuralNetwork:
             if l2:
                 train_reg_loss = (l2_lambda / (2 * epoch_m)) * self.sum_weight_squares(self.__WB)
             train_total_loss = train_data_loss + train_reg_loss
-            _, val_data_loss, val_acc = self.evaluate_dataset(X_val, Y_val)
+            _, val_data_loss, val_acc = self.evaluate_dataset(X_valid, Y_valid)
             
             train_data_loss_py = self.scalar_to_python(train_data_loss)
             train_reg_loss_py = self.scalar_to_python(train_reg_loss)
@@ -1067,8 +1083,8 @@ class NeuralNetwork:
         if restore_best and best_WB is not None:
             self.__WB = best_WB
 
-        _, final_data_loss, final_accuracy = self.evaluate_dataset(X, Y)
-        final_reg_loss = (l2_lambda / (2 * X.shape[0])) * self.sum_weight_squares(self.__WB)
+        _, final_data_loss, final_accuracy = self.evaluate_dataset(X_train, Y_train)
+        final_reg_loss = (l2_lambda / (2 * X_train.shape[0])) * self.sum_weight_squares(self.__WB)
         final_loss = final_data_loss + final_reg_loss
 
         if graph:
@@ -1081,20 +1097,17 @@ class NeuralNetwork:
         
         if finalize:
             print("\nFinal Results : \n")
-            train_pred, train_loss, train_acc = model.evaluate_dataset(X_train, Y_train)
-            val_pred, val_loss, val_acc = model.evaluate_dataset(X_valid, Y_valid)
-            test_pred, test_loss, test_acc = model.evaluate_dataset(X_test, Y_test)
+            train_pred, train_loss, train_acc = self.evaluate_dataset(X_train, Y_train)
+            val_pred, val_loss, val_acc = self.evaluate_dataset(X_valid, Y_valid)
             
             print("Train:", train_loss, train_acc)
             print("Valid:", val_loss, val_acc)
-            print("Test :", test_loss, test_acc)
-
-            if _log_predictions:
-                self.log_predictions(Y_train, train_pred, _log_predictions, train_prediction_file, prediction_path, prediction_threshold, _encoding)
-                self.log_predictions(Y_valid, val_pred, _log_predictions, validation_prediction_file, prediction_path, prediction_threshold, _encoding)
-                self.log_predictions(Y_test, test_pred, _log_predictions, test_prediction_file, prediction_path, prediction_threshold, _encoding)
+            
+            if X_test is not None and Y_test is not None:
+                test_pred, test_loss, test_acc = self.evaluate_dataset(X_test, Y_test)
+                print("Test :", test_loss, test_acc)
         
-        return self.TrainResults(
+        train_results = self.TrainResults(
             losses=losses, 
             val_losses=val_losses, 
             best_val_loss=best_val_loss, 
@@ -1104,8 +1117,30 @@ class NeuralNetwork:
             accuracy=final_accuracy, 
             final_learning_rate=current_lr
         )
-    
-    def log_predictions(self, Y, predictions, _log_predictions, prediction_file, prediction_path, prediction_threshold, _encoding):
+
+        if _log_predictions:
+            total_samples = len(Y_train) + len(Y_valid) + (len(Y_test) if Y_test is not None else 0)
+            if total_samples > prediction_tolerance:
+                print("\nThe current dataset is too large, >100 samples is expected to be written!")
+                print("\nDo you really want to write down all those predictions? If not, input [N/No], otherwise [Y/Yes] (case-insensitive)")
+                while True:
+                    choice = input("Do you wish to continue? [y(Y)/n(N)] ").strip().lower()
+                    if choice in ("y", "yes"):
+                        break
+                    elif choice in ("n", "no"):
+                        _log_predictions = False
+                        break
+                    else:
+                        print("Invalid Input, supported values are : [N/n/No, Y/y/Yes]")
+            
+            self.log_predictions(Y_train, train_pred, _log_predictions, train_prediction_file, prediction_path, prediction_tolerance, prediction_threshold, _encoding)
+            self.log_predictions(Y_valid, val_pred, _log_predictions, validation_prediction_file, prediction_path, prediction_tolerance, prediction_threshold, _encoding)
+            if Y_test is not None and test_pred is not None:
+                self.log_predictions(Y_test, test_pred, _log_predictions, test_prediction_file, prediction_path, prediction_tolerance, prediction_threshold, _encoding)
+        
+        return train_results
+            
+    def log_predictions(self, Y, predictions, _log_predictions, prediction_file, prediction_path, prediction_tolerance, prediction_threshold, _encoding):
         if prediction_path is not None and not os.path.exists(prediction_path):
             os.mkdir(prediction_path)
 
@@ -1124,13 +1159,15 @@ class NeuralNetwork:
                     prediction_result = np.where(prediction == 1)[0]
                     f.write(f"Sample : {sample_result}, Prediction : {prediction_result} {"correct" if sample_result == prediction_result else "failed"}\n")
                 
-            print(f"\nFirst <{prediction_threshold} predictions are written in {prediction_file_name}")  
+            print(f"\nFirst <{prediction_threshold} predictions are written in {prediction_file_path}")  
         else:
             first_sample, last_sample, first_prediction, last_prediction = Y[0], Y[-1], predictions[0], predictions[-1]
             print("Detailed Prediction Logging disabled, falling back to the first and last sample predictions : ")
             print(f"First Sample : {np.where(first_sample == 1)[0]}, Prediction : {np.where(first_prediction == 1)[0]}")
             print(f"Last Sample : {np.where(last_sample == 1)[0]}, Prediction : {np.where(last_prediction == 1)[0]}\n")
-
+        
+        return True
+    
     def shuffle_dataset(self, X, Y, size, random_range):
         xp = self.xp
         
@@ -1356,7 +1393,7 @@ class NeuralNetwork:
     @classmethod
     def load_from_csv(cls, filepath, _newline="", _encoding=None):
         if _encoding is None:
-            _encoding = cls.Encodings.UTF_8
+            _encoding = cls.Encodings().UTF_8
         with open(filepath, "r", newline=_newline, encoding=_encoding) as f:
             reader = csv.reader(f)
             header = next(reader)
@@ -1394,7 +1431,7 @@ class NeuralNetwork:
         filepath = json_file_path + filename
         
         if _encoding is None:
-            _encoding = cls.Encodings.UTF_8
+            _encoding = cls.Encodings().UTF_8
             
         json_data = {
             "train": cls.split_to_records(dataset["X_train"], dataset["Y_train"]),
@@ -1488,6 +1525,7 @@ class NeuralNetwork:
                 return cls.load_from_pickle(file_path)
             case _:
                 raise ValueError(f"Unknown File Type, supported ones are : {cls.Datasets.NPZ}, {cls.Datasets.PICKLE}, {cls.Datasets.JSON}")
+
     @classmethod
     def load_csv_datasets(cls, folder):
         X_train, Y_train = cls.load_from_csv(f"{folder}/train.csv")
@@ -1503,9 +1541,10 @@ class NeuralNetwork:
             "Y_test": Y_test,
         }
 
+
 if __name__ == "__main__":
     number_of_classes = 2
-    dataset = NeuralNetwork.load_from_npz('data/npz/MNIST.npz')
+    dataset = NeuralNetwork.load_from_npz('data/npz/dataset.npz')
     # prepared_dataset = dataset
     prepared_dataset = NeuralNetwork.prepare_datasets(dataset, number_of_classes)
     
@@ -1518,6 +1557,11 @@ if __name__ == "__main__":
 
     number_of_features = X_train.shape[1]
     layers = [4, 1, number_of_classes]
+    # layers = NeuralNetwork.init_layers(
+    #     X=X_train,
+    #     number_of_hidden_layers=10,
+    #     output_width=10    
+    # )
     
     model = NeuralNetwork(
         number_of_features,
@@ -1539,18 +1583,26 @@ if __name__ == "__main__":
 
     cfg = NeuralNetwork.TrainDefaults()
     
-    # limit = 1000
+    # limit = 101
     cfg.step = 100
     cfg.epochs = 1000
     cfg.batch_size = 4
     cfg.learning_rate = 0.01
-
+    
+    # X_train = X_train[:limit]
+    # Y_train = Y_train[:limit]
+    # X_valid = X_valid[:limit]
+    # Y_valid = Y_valid[:limit]
+    # X_test = X_test[:limit]
+    # Y_test = Y_test[:limit]
 
     results = model.train(
         X_train, 
         Y_train, 
         X_valid, 
         Y_valid,
+        X_test,
+        Y_test,
         learning_decay_type=None,
         data_augmentation_type=None,
         cfg=cfg,
@@ -1558,7 +1610,7 @@ if __name__ == "__main__":
         restore_best=False,
         finalize=True, 
         l2=False, 
-        dropout=False, 
+        dropout=False,
         graph=False,
         _log_predictions=True
     )
@@ -1569,10 +1621,3 @@ if __name__ == "__main__":
         "models/mnist_small.pkl",
         device=NeuralNetwork.Device.CUDA
     )
-    
-    X_test = loaded_model.to_device(X_test, dtype=loaded_model.xp.float32)
-    Y_test = loaded_model.to_device(Y_test, dtype=loaded_model.xp.float32)
-        
-    if loaded_model is not None:
-        results = loaded_model.evaluate_dataset(X_test, Y_test)
-        print(results[1])
