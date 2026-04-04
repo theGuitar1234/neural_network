@@ -759,8 +759,9 @@ class NeuralNetwork:
         drop_out_rate = 0.0
         keep_prob = 0.0
         
-        if cfg is None and training_mode:
-            cfg = self.TrainDefaults()
+        if training_mode:
+            if cfg is None:
+                cfg = self.TrainDefaults()
 
             drop_out_rate = cfg.drop_out_rate
             if not (0.0 <= drop_out_rate < 1.0):
@@ -1029,9 +1030,11 @@ class NeuralNetwork:
             plt.show()
         
         if finalize:
-            print("\nFinal Predictions : \n")
             predictions, loss, accuracy = self.evaluate_dataset(X, Y)
-            
+            print("\nFinal Predictions : ")
+            first_sample, last_sample, first_prediction, last_prediction = Y[0], Y[-1], predictions[0], predictions[-1]
+            print(f"First Sample : {np.where(first_sample == 1)[0]}, Prediction : {np.where(first_prediction == 1)[0]}")
+            print(f"Last Sample : {np.where(last_sample == 1)[0]}, Prediction : {np.where(last_prediction == 1)[0]}\n")
             print("\nFinal Loss : ", loss)
             print("\nFinal Accuracy : ", accuracy)
         
@@ -1440,13 +1443,16 @@ if __name__ == "__main__":
 
     X_train_small = X_train[:limit]
     Y_train_small = Y_train[:limit]
+    
+    number_of_features = X_train.shape[1]
+    layers = [128, 64, number_of_classes]
 
     model = NeuralNetwork(
-        X_train.shape[1],
-        [128, 64, 10],
-        loss_type=NeuralNetwork.LossType.MSE,
+        number_of_features,
+        layers,
+        loss_type=NeuralNetwork.LossType.MULTI_CLASS_CROSS_ENTROPY,
         output_activation_type=NeuralNetwork.OutputActivationType.SOFTMAX,
-        hidden_activation_type=NeuralNetwork.HiddenActivationType.LEAKY_RELU
+        hidden_activation_type=NeuralNetwork.HiddenActivationType.RELU
     )
     
     X_train = model.to_device(X_train, dtype=model.xp.float32)
@@ -1458,17 +1464,29 @@ if __name__ == "__main__":
     X_test = model.to_device(X_test, dtype=model.xp.float32)
     Y_test = model.to_device(Y_test, dtype=model.xp.float32)
 
-    results = model.train(X_train_small, Y_train_small, X_valid, Y_valid, finalize=True, l2=True, dropout=True, graph=True)
-    model.save_model("mnist_small")
-
-    loaded_model = NeuralNetwork.load_model(
-        "models/mnist_small.pkl",
-        device=NeuralNetwork.Device.CUDA
+    results = model.train(
+        X_train_small, 
+        Y_train_small, 
+        X_valid, 
+        Y_valid,
+        learning_decay_type=NeuralNetwork.LearningDecayType.STEP_DECAY,
+        data_augmentation_type=NeuralNetwork.DataAugmentation.SAME_CLASS_INTERPOLATION,
+        finalize=True, 
+        l2=True, 
+        dropout=True, 
+        graph=True
     )
     
-    X_test = loaded_model.to_device(X_test, dtype=loaded_model.xp.float32)
-    Y_test = loaded_model.to_device(Y_test, dtype=loaded_model.xp.float32)
+    # model.save_model("mnist_small")
+
+    # loaded_model = NeuralNetwork.load_model(
+    #     "models/mnist_small.pkl",
+    #     device=NeuralNetwork.Device.CUDA
+    # )
+    
+    # X_test = loaded_model.to_device(X_test, dtype=loaded_model.xp.float32)
+    # Y_test = loaded_model.to_device(Y_test, dtype=loaded_model.xp.float32)
         
-    if loaded_model is not None:
-        results = loaded_model.evaluate_dataset(X_test, Y_test)
-        print(results[1])
+    # if loaded_model is not None:
+    #     results = loaded_model.evaluate_dataset(X_test, Y_test)
+    #     print(results[1])
