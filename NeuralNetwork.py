@@ -927,12 +927,11 @@ class NeuralNetwork:
                 raise TypeError("step must be an integer")
             if step < 1 or step > epochs:
                 raise ValueError("step must be positive and <= iterations")
-        
-        train_data_loss = 0.0
-        train_reg_loss = 0.0
-        train_total_loss = train_data_loss + train_reg_loss
 
         for epoch in range(epochs):
+            train_data_loss = 0.0
+            train_reg_loss = 0.0
+            train_total_loss = train_data_loss + train_reg_loss
 
             X_shuf, Y_shuf = self.shuffle_dataset(X, Y, base_m, random_range)
 
