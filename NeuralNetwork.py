@@ -84,13 +84,13 @@ class NeuralNetwork:
         CPU = 1
         CUDA = 2
     
-    @dataclass(frozen=True)
+    @dataclass
     class TrainDefaults:
-        learning_rate: float = 1e-3
-        epochs: int = 100
+        learning_rate: float = 0.03
+        epochs: int = 5000
         reg: float = 1e-4
         epsilon: float = 1e-12
-        step: int = 10
+        step: int = 100
         drop_out_rate: float = 0.03
         l2_lambda: float = 0.03
         batch_size: int = 512
@@ -270,6 +270,9 @@ class NeuralNetwork:
                 hidden_bias_value=hidden_bias_value,
                 output_positive_prior=output_positive_prior
             )
+            
+            random_weights = self.to_device(random_weights, dtype=self.xp.float32)
+            random_biases = self.to_device(random_biases, dtype=self.xp.float32)
 
             self.__WB.append((random_weights, random_biases))
     
@@ -870,7 +873,7 @@ class NeuralNetwork:
             case _:
                 raise ValueError(f"Unknown Learning Decay Type, supported values are : {self.LearningDecayType.STEP_DECAY}")
 
-    def train(self, X, Y, X_val, Y_val, learning_decay_type=None, data_augmentation_type=None, l2=False, dropout=False, cfg=None, log=True, graph=True, finalize=False):
+    def train(self, X, Y, X_val, Y_val, learning_decay_type=None, data_augmentation_type=None, l2=False, dropout=False, early_stopping=False, restore_best=False, cfg=None, log=True, graph=True, finalize=False):
         xp = self.xp
         if X.ndim != 2:
             raise ValueError("X must be 2D: (samples, features)")
@@ -910,7 +913,11 @@ class NeuralNetwork:
         best_epoch = None
         steps = []
 
-        random_range = xp.random.default_rng(seed)
+        if self.on_gpu:
+            xp.random.seed(seed)
+            random_range = None
+        else:
+            random_range = np.random.default_rng(seed)
 
         if type(epochs) is not int:
             raise TypeError("iterations must be an integer")
@@ -982,40 +989,55 @@ class NeuralNetwork:
             train_reg_loss = (l2_lambda / (2 * epoch_m)) * self.sum_weight_squares(self.__WB)
             train_total_loss = train_data_loss + train_reg_loss
             _, val_data_loss, val_acc = self.evaluate_dataset(X_val, Y_val)
-            val_losses.append(self.scalar_to_python(val_data_loss))
-            val_accuracies.append(self.scalar_to_python(val_acc))
+            
+            train_data_loss_py = self.scalar_to_python(train_data_loss)
+            train_reg_loss_py = self.scalar_to_python(train_reg_loss)
+            train_total_loss_py = self.scalar_to_python(train_total_loss)
+            val_data_loss_py = self.scalar_to_python(val_data_loss)
+            val_acc_py = self.scalar_to_python(val_acc)
+            
+            val_losses.append(val_data_loss_py)
+            val_accuracies.append(val_acc_py)
 
             if epoch >= 0 and epoch % step == 0:
+                g0 = grads[0][0]
+                gL = grads[-1][0]
+                print(
+                    "grad_norm_first =", self.scalar_to_python(xp.linalg.norm(g0)),
+                    "grad_norm_last =", self.scalar_to_python(xp.linalg.norm(gL))
+                )
+                
                 if learning_decay_type is not None:
                     current_lr = self.learning_decay(initial_lr, decay_factor, epoch, step, learning_decay_type)
 
                 if log:
                     print(
                         "epoch =", epoch,
-                        "train_data_loss =", round(train_data_loss, 6),
-                        "train_reg_loss =", round(train_reg_loss, 6),
-                        "train_total_loss =", round(train_total_loss, 6),
-                        "val_data_loss =", round(val_data_loss, 6),
-                        "val_acc =", round(val_acc, 4)
+                        "train_data_loss =", round(train_data_loss_py, 6),
+                        "train_reg_loss =", round(train_reg_loss_py, 6),
+                        "train_total_loss =", round(train_total_loss_py, 6),
+                        "val_data_loss =", round(val_data_loss_py, 6),
+                        "val_acc =", round(val_acc_py, 4)
                     )
 
                 if graph:
-                    losses.append(train_data_loss)
+                    losses.append(train_data_loss_py)
                     steps.append(epoch)
 
-            if val_data_loss < best_val_loss:
-                best_val_loss = val_data_loss
+            if val_data_loss_py < best_val_loss:
+                best_val_loss = val_data_loss_py
                 best_WB = copy.deepcopy(self.__WB)
                 best_epoch = epoch
                 patience_counter = 0
             else:
                 patience_counter += 1
  
-            if patience_counter >= patience:
+            if early_stopping and patience_counter >= patience:
                 print("early stopping at epoch", epoch)
                 break
         
-        self.__WB = best_WB if best_WB is not None else self.__WB
+        if restore_best and best_WB is not None:
+            self.__WB = best_WB
 
         _, final_data_loss, final_accuracy = self.evaluate_dataset(X, Y)
         final_reg_loss = (l2_lambda / (2 * X.shape[0])) * self.sum_weight_squares(self.__WB)
@@ -1050,7 +1072,15 @@ class NeuralNetwork:
         )
 
     def shuffle_dataset(self, X, Y, size, random_range):
-        permutation = random_range.permutation(size)
+        xp = self.xp
+        
+        if self.on_gpu:
+            permutation = xp.random.permutation(size)
+        else:
+            if random_range is None:
+                random_range = np.random.default_rng()
+            permutation = random_range.permutation(size)
+
         X_shuf = X[permutation]
         Y_shuf = Y[permutation]
         return X_shuf, Y_shuf
@@ -1086,8 +1116,6 @@ class NeuralNetwork:
 
     def data_augmentation(self, X, Y, augmentation_type, random_range=None):
         xp = self.xp
-        if random_range is None:
-            random_range = xp.random.default_rng()
 
         X = xp.asarray(X, dtype=float)
         Y = xp.asarray(Y)
@@ -1095,6 +1123,11 @@ class NeuralNetwork:
         X_aug = X.copy()
         Y_aug = Y.copy()
 
+        if self.on_gpu:
+            random_range = xp.random
+        elif random_range is None:
+            random_range = np.random.default_rng()
+        
         match augmentation_type:
             case self.DataAugmentation.JITTER_NOISE:
                 jitter_strength = 0.03
@@ -1134,12 +1167,15 @@ class NeuralNetwork:
                         x_new = alpha * X_aug[i1] + (1.0 - alpha) * X_aug[i2]
                         y_new = Y_aug[i1].copy()
 
-                        synthetic_x.append(x_new.reshape(-1, 1))
-                        synthetic_y.append(y_new.reshape(-1, 1))
+                        synthetic_x.append(x_new)
+                        synthetic_y.append(y_new)
 
                 if synthetic_x:
-                    X_aug = xp.concatenate([X_aug] + synthetic_x, axis=0)
-                    Y_aug = xp.concatenate([Y_aug] + synthetic_y, axis=0)
+                    synthetic_x = xp.stack(synthetic_x, axis=0)
+                    synthetic_y = xp.stack(synthetic_y, axis=0)
+
+                    X_aug = xp.concatenate([X_aug, synthetic_x], axis=0)
+                    Y_aug = xp.concatenate([Y_aug, synthetic_y], axis=0)
 
             case _:
                 raise ValueError(f"Unknown Data Augmentation Type, supported values are : {self.DataAugmentation.MEASUREMENT_NOISE}, {self.DataAugmentation.JITTER_NOISE}, {self.DataAugmentation.SAME_CLASS_INTERPOLATION}")
@@ -1438,21 +1474,17 @@ if __name__ == "__main__":
     # Y_train_one_hot = NeuralNetwork.one_hot_encode(Y_train, 10)
     # Y_valid_one_hot = NeuralNetwork.one_hot_encode(Y_valid, 10)
     # Y_test_one_hot = NeuralNetwork.one_hot_encode(Y_test, 10)
-
-    limit = 100
-
-    X_train_small = X_train[:limit]
-    Y_train_small = Y_train[:limit]
     
     number_of_features = X_train.shape[1]
     layers = [128, 64, number_of_classes]
-
+    
     model = NeuralNetwork(
         number_of_features,
         layers,
         loss_type=NeuralNetwork.LossType.MULTI_CLASS_CROSS_ENTROPY,
         output_activation_type=NeuralNetwork.OutputActivationType.SOFTMAX,
-        hidden_activation_type=NeuralNetwork.HiddenActivationType.RELU
+        hidden_activation_type=NeuralNetwork.HiddenActivationType.RELU,
+        device=NeuralNetwork.Device.CUDA
     )
     
     X_train = model.to_device(X_train, dtype=model.xp.float32)
@@ -1464,18 +1496,45 @@ if __name__ == "__main__":
     X_test = model.to_device(X_test, dtype=model.xp.float32)
     Y_test = model.to_device(Y_test, dtype=model.xp.float32)
 
+    cfg = NeuralNetwork.TrainDefaults()
+    
+    limit = 32
+    cfg.step = 20
+    cfg.epochs = 500
+    cfg.batch_size = 32
+    cfg.learning_rate = 0.1
+    
+    # X_train_small = X_train[:limit]
+    # Y_train_small = Y_train[:limit]
+    
+    perm = model.xp.random.permutation(X_train.shape[0])[:limit]
+    X_train_small = X_train[perm]
+    Y_train_small = Y_train[perm]
+
     results = model.train(
         X_train_small, 
         Y_train_small, 
         X_valid, 
         Y_valid,
-        learning_decay_type=NeuralNetwork.LearningDecayType.STEP_DECAY,
-        data_augmentation_type=NeuralNetwork.DataAugmentation.SAME_CLASS_INTERPOLATION,
+        learning_decay_type=None,
+        data_augmentation_type=None,
+        cfg=cfg,
+        early_stopping=True,
+        restore_best=True,
         finalize=True, 
-        l2=True, 
-        dropout=True, 
-        graph=True
+        l2=False, 
+        dropout=False, 
+        graph=False
     )
+    
+    pred_probs, _ = model.predict(X_train_small)
+
+    xp = model.xp
+    true_classes = xp.argmax(Y_train_small, axis=1)
+    pred_classes = xp.argmax(pred_probs, axis=1)
+
+    print("True label counts:", model.tp_cpu(xp.bincount(true_classes, minlength=10)))
+    print("Pred label counts:", model.tp_cpu(xp.bincount(pred_classes, minlength=10)))
     
     # model.save_model("mnist_small")
 
@@ -1490,3 +1549,4 @@ if __name__ == "__main__":
     # if loaded_model is not None:
     #     results = loaded_model.evaluate_dataset(X_test, Y_test)
     #     print(results[1])
+    
