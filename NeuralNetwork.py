@@ -219,20 +219,18 @@ class NeuralNetwork:
     
         match device:
             case self.Device.CPU:
-                self.xp = np
                 self.on_gpu = False
-            case self.Device.GPU:
+            case self.Device.CUDA:
                 if cp is None:
                     raise RuntimeError("CuPy is not installed. Install a CUDA-enabled CuPy package first")
-                self.xp = cp
                 self.on_gpu = True
             case _:
                 raise ValueError("UnSupported Device Type")
     
         if self.on_gpu:
-            self.__init_random_range = init_random_range if init_random_range is not None else np.random.default_rng(init_seed)
-        else:
             self.__init_random_range = init_random_range if init_random_range is not None else cp.random.default_rng(init_seed)
+        else:
+            self.__init_random_range = init_random_range if init_random_range is not None else np.random.default_rng(init_seed)
 
         self.__L = len(layers)
         self.__cache = []
@@ -275,6 +273,21 @@ class NeuralNetwork:
 
             self.__WB.append((random_weights, random_biases))
     
+    def scalar_to_python(self, x):
+        if self.on_gpu:
+            return float(cp.asnumpy(x))
+        return float(x)
+    
+    def to_cpu_WB(self):
+        if not self.on_gpu:
+            return self.__WB
+        return [(cp.asnumpy(W), cp.asnumpy(b)) for W, b in self.__WB]
+    
+    def cpu_to_cuda_WB(self, WB):
+        if self.on_gpu:
+            return [(cp.asarray(W), cp.asarray(b)) for W, b in WB]
+        return [(np.asarray(W), np.asarray(b)) for W, b in WB]
+    
     def to_device(self, x, dtype=None):
         if self.on_gpu:
             return cp.asarray(x, dtype=dtype)
@@ -284,6 +297,30 @@ class NeuralNetwork:
         if self.on_gpu:
             return cp.asnumpy(x)
         return np.asarray(x)
+    
+    def cpu_copy(self):
+        model_cpu = copy.copy(self)
+        model_cpu.on_gpu = False
+        model_cpu._NeuralNetwork__WB = [(W.copy(), b.copy()) for W, b in self.to_cpu_WB()]
+        return model_cpu
+    
+    def move_to(self, device):
+        match device:
+            case self.Device.CPU:
+                wb_cpu = self.to_cpu_WB()
+                self._NeuralNetwork__WB = wb_cpu
+                self.on_gpu = False
+            case self.Device.CUDA:
+                if cp is None:
+                    raise RuntimeError("CuPy is not installed")
+                self._NeuralNetwork__WB = [(cp.asarray(W), cp.asarray(b)) for W, b in self.to_cpu_WB()]
+                self.on_gpu = True
+            case _:
+                raise ValueError("Unsupported device")
+        
+    @property
+    def xp(self):
+        return cp if self.on_gpu else np
 
     @property
     def L(self):
@@ -656,7 +693,8 @@ class NeuralNetwork:
                 raise ValueError(
                     f"Unknown Output Activation Type, supported values are : {self.OutputActivationType.SIGMOID}, {self.OutputActivationType.SOFTMAX}")
 
-    def hidden_derivative_from_output(self, a, hidden_activation_type=HiddenActivationType.SIGMOID):
+    def hidden_derivative_from_output(self, a):
+        hidden_activation_type = self.__hidden_activation_type
         match hidden_activation_type:
             case self.HiddenActivationType.SIGMOID:
                 return self.dsigmoid_from_output(a)
@@ -669,7 +707,8 @@ class NeuralNetwork:
             case _:
                 raise ValueError(f"Unknown Hidden Activation Type, supported values are : {self.HiddenActivationType.SIGMOID}, {self.HiddenActivationType.RELU}, {self.HiddenActivationType.LEAKY_RELU}, {self.HiddenActivationType.TANH}")
 
-    def activation(self, A, hidden_activation_type=HiddenActivationType.SIGMOID):
+    def activation(self, A):
+        hidden_activation_type = self.__hidden_activation_type
         match hidden_activation_type:
             case self.HiddenActivationType.SIGMOID:
                 return self.sigmoid(A)
@@ -682,10 +721,11 @@ class NeuralNetwork:
             case _:
                 raise ValueError(f"Unknown Hidden Activation Type, supported values are : {self.HiddenActivationType.SIGMOID}, {self.HiddenActivationType.RELU}, {self.HiddenActivationType.LEAKY_RELU}, {self.HiddenActivationType.TANH}")
     
-    def loss(self, Y, A, loss_type=None, epsilon=None):
+    def loss(self, Y, A, epsilon=None):
         if epsilon is None:
             epsilon = self.TrainDefaults().epsilon
 
+        loss_type = self.__loss_type
         if loss_type == self.LossType.MSE:
             return self.mse_loss(Y, A)
         if loss_type == self.LossType.MULTI_CLASS_CROSS_ENTROPY:
@@ -747,7 +787,7 @@ class NeuralNetwork:
                 A = A_raw
                 M.append(None)
             else:
-                A_raw = self.activation(Z, hidden_activation_type)
+                A_raw = self.activation(Z)
                 if training_mode and drop_out_rate > 0.0:
                     mask = self.bernoulli(A_raw.shape, drop_out_rate)
                     A = (A_raw * mask) / keep_prob
@@ -798,7 +838,7 @@ class NeuralNetwork:
                     dA_prev = (dA_prev * M[l - 1]) / keep_prob
                 
                 A_prev = activation_cache[l - 1]
-                dZ = dA_prev * self.hidden_derivative_from_output(A_prev, hidden_activation_type)
+                dZ = dA_prev * self.hidden_derivative_from_output(A_prev)
 
         return grads
 
@@ -912,17 +952,17 @@ class NeuralNetwork:
                 batch_m = Y_batch.shape[0]
 
                 if dropout:
-                    A, cache, activation_cache, M = self.forward_pass(X_batch, hidden_activation_type=self.__hidden_activation_type, output_activation_type=self.__output_activation_type, cfg=cfg, training_mode=True)
+                    A, cache, activation_cache, M = self.forward_pass(X_batch, cfg=cfg, training_mode=True)
                 else:
-                    A, cache, activation_cache, M = self.forward_pass(X_batch, hidden_activation_type=self.__hidden_activation_type, output_activation_type=self.__output_activation_type, cfg=None, training_mode=False)
+                    A, cache, activation_cache, M = self.forward_pass(X_batch, cfg=None, training_mode=False)
 
-                batch_loss = self.loss(Y_batch, A, self.__loss_type, epsilon)
+                batch_loss = self.loss(Y_batch, A, epsilon)
                 train_data_loss += batch_loss * (end - batch_start)
 
                 if dropout:
-                    grads = self.backward_propagation(Y_batch, cache, activation_cache, M, hidden_activation_type=self.__hidden_activation_type, cfg=cfg, training_mode=True)
+                    grads = self.backward_propagation(Y_batch, cache, activation_cache, M, cfg=cfg, training_mode=True)
                 else:
-                    grads = self.backward_propagation(Y_batch, cache, activation_cache, M, hidden_activation_type=self.__hidden_activation_type, cfg=None, training_mode=False)
+                    grads = self.backward_propagation(Y_batch, cache, activation_cache, M, cfg=None, training_mode=False)
                 
                 if l2:
                     grads_with_L2 = []
@@ -996,7 +1036,16 @@ class NeuralNetwork:
             print("\nFinal Loss : ", loss)
             print("\nFinal Accuracy : ", accuracy)
         
-        # return self.TrainResults(losses=losses, val_losses=val_losses, best_val_loss=best_val_loss, val_accuracies=val_accuracies, best_epoch=best_epoch, final_loss=final_loss, accuracy=final_accuracy, final_learning_rate=current_lr)
+        return self.TrainResults(
+            losses=losses, 
+            val_losses=val_losses, 
+            best_val_loss=best_val_loss, 
+            val_accuracies=val_accuracies, 
+            best_epoch=best_epoch, 
+            final_loss=final_loss, 
+            accuracy=final_accuracy, 
+            final_learning_rate=current_lr
+        )
 
     def shuffle_dataset(self, X, Y, size, random_range):
         permutation = random_range.permutation(size)
@@ -1012,7 +1061,7 @@ class NeuralNetwork:
             epsilon = self.TrainDefaults().epsilon
         
         A, _ = self.predict(X)
-        loss = self.loss(Y, A, self.__loss_type, epsilon)
+        loss = self.loss(Y, A, epsilon)
 
         is_binary = (output_activation_type == self.OutputActivationType.SIGMOID and A.shape[1] == 1)
 
@@ -1030,7 +1079,7 @@ class NeuralNetwork:
         return prediction, loss, accuracy
     
     def predict(self, x):
-        A, cache, _, _ = self.forward_pass(x, hidden_activation_type=self.__hidden_activation_type, output_activation_type=self.__output_activation_type, training_mode=False)
+        A, cache, _, _ = self.forward_pass(x, training_mode=False)
         return A, cache
 
     def data_augmentation(self, X, Y, augmentation_type, random_range=None):
@@ -1094,16 +1143,6 @@ class NeuralNetwork:
                 raise ValueError(f"Unknown Data Augmentation Type, supported values are : {self.DataAugmentation.MEASUREMENT_NOISE}, {self.DataAugmentation.JITTER_NOISE}, {self.DataAugmentation.SAME_CLASS_INTERPOLATION}")
 
         return X_aug, Y_aug
-
-    def scalar_to_python(self, x):
-        if self.on_gpu:
-            return float(cp.asnumpy)
-        return float(x)
-    
-    def cpu_weights(self):
-        if not self.on_gpu:
-            return self.__WB
-        return [(cp.asnumpy(W), cp.asnumpy(b)) for W, b in self.__WB]
     
     @staticmethod
     def one_hot_encode(Y, classes):
@@ -1129,21 +1168,23 @@ class NeuralNetwork:
         if not file_name.endswith(".pkl"):
             file_name = file_name + ".pkl"
 
-        modelpath = self.TrainResults.model_path
+        modelpath = self.Paths.model_path
         if modelpath is not None and not os.path.exists(modelpath):
             os.mkdir(modelpath)
-
+        
+        model_cpu = self.cpu_copy()
+        
         file_path = modelpath + file_name
         with open(file_path, "wb") as f:
-            pickle.dump(self, f)
+            pickle.dump(model_cpu, f)
 
-    @staticmethod
-    def load_model(model_path):
-        try:
-            with open(model_path, "rb") as f:
-                return pickle.load(f)
-        except Exception:
-            return None
+    @classmethod
+    def load_model(cls, model_path, device=None):
+        with open(model_path, "rb") as f:
+            model = pickle.load(f)
+        if device is not None:
+            model.move_to(device)
+        return model
     
     @classmethod
     def load_from_npz(cls, npz_path):
@@ -1419,10 +1460,16 @@ if __name__ == "__main__":
     Y_test = model.to_device(Y_test, dtype=model.xp.float32)
 
     results = model.train(X_train_small, Y_train_small, X_valid, Y_valid, finalize=True, l2=True, dropout=True, graph=True)
-    model.save("mnist_small")
+    model.save_model("mnist_small")
 
-    loaded_model = NeuralNetwork.load("mnist_small.pkl")
+    loaded_model = NeuralNetwork.load_model(
+        "models/mnist_small.pkl",
+        device=NeuralNetwork.Device.CUDA
+    )
     
+    X_test = loaded_model.to_device(X_test, dtype=loaded_model.xp.float32)
+    Y_test = loaded_model.to_device(Y_test, dtype=loaded_model.xp.float32)
+        
     if loaded_model is not None:
         results = loaded_model.evaluate_dataset(X_test, Y_test)
         print(results[1])
