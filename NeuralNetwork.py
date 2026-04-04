@@ -5,12 +5,17 @@ import csv
 import copy
 import json
 import pickle
-import numpy as np
 import matplotlib.pyplot as plt
 
 from enum import Enum
 from dataclasses import dataclass
 
+import numpy as np
+
+try:
+    import cupy as cp
+except ImportError:
+    cp = None
 
 class NeuralNetwork:
 
@@ -75,6 +80,10 @@ class NeuralNetwork:
         JSON = 2
         PICKLE = 3
     
+    class Device(Enum):
+        CPU = 1
+        CUDA = 2
+    
     @dataclass(frozen=True)
     class TrainDefaults:
         learning_rate: float = 1e-3
@@ -84,7 +93,7 @@ class NeuralNetwork:
         step: int = 10
         drop_out_rate: float = 0.03
         l2_lambda: float = 0.03
-        batch_size: int = 4
+        batch_size: int = 512
         patience: int = 100
         decay_factor: float = 0.5
         seed: int = 42
@@ -124,7 +133,7 @@ class NeuralNetwork:
     class Encodings:
         UTF_8: str = "utf_8"
 
-    def __init__(self, number_of_features, layers, loss_type=None, output_activation_type=None, hidden_activation_type=None, hidden_weight_init_strategy=None, output_weight_init_strategy=None, bias_init_strategy=None, init_seed=None, init_random_range=None, hidden_bias_value=0.0, output_positive_prior=None):
+    def __init__(self, number_of_features, layers, loss_type=None, output_activation_type=None, hidden_activation_type=None, hidden_weight_init_strategy=None, output_weight_init_strategy=None, bias_init_strategy=None, init_seed=None, init_random_range=None, hidden_bias_value=0.0, output_positive_prior=None, device=Device.CPU):
         if type(number_of_features) is not int:
             raise TypeError("number_of_features must be an integer")
         if number_of_features < 1:
@@ -208,7 +217,23 @@ class NeuralNetwork:
             if not (0.0 < output_positive_prior < 1.0):
                 raise ValueError("output_positive_prior must be strictly between 0 and 1")
     
-        self.__init_random_range = init_random_range if init_random_range is not None else np.random.default_rng(init_seed)
+        match device:
+            case self.Device.CPU:
+                self.xp = np
+                self.on_gpu = False
+            case self.Device.GPU:
+                if cp is None:
+                    raise RuntimeError("CuPy is not installed. Install a CUDA-enabled CuPy package first")
+                self.xp = cp
+                self.on_gpu = True
+            case _:
+                raise ValueError("UnSupported Device Type")
+    
+        if self.on_gpu:
+            self.__init_random_range = init_random_range if init_random_range is not None else np.random.default_rng(init_seed)
+        else:
+            self.__init_random_range = init_random_range if init_random_range is not None else cp.random.default_rng(init_seed)
+
         self.__L = len(layers)
         self.__cache = []
         self.__WB = []
@@ -249,6 +274,16 @@ class NeuralNetwork:
             )
 
             self.__WB.append((random_weights, random_biases))
+    
+    def to_device(self, x, dtype=None):
+        if self.on_gpu:
+            return cp.asarray(x, dtype=dtype)
+        return np.asarray(x, dtype=dtype)
+
+    def tp_cpu(self, x):
+        if self.on_gpu:
+            return cp.asnumpy(x)
+        return np.asarray(x)
 
     @property
     def L(self):
@@ -529,81 +564,80 @@ class NeuralNetwork:
             case _:
                 raise ValueError("Unknown Bias Init Strategy")
     
-    @staticmethod
-    def linear_model(W, X, b):
+    def linear_model(self, W, X, b):
         return X @ W.T + b.T
     
-    @staticmethod
-    def sigmoid(z):
-        z = np.asarray(z, dtype=float)
-        out = np.empty_like(z)
+    def sigmoid(self, z):
+        xp = self.xp
+        z = xp.asarray(z, dtype=float)
+        out = xp.empty_like(z)
 
         pos = z >= 0
         neg = ~pos
 
-        out[pos] = 1.0 / (1.0 + np.exp(-z[pos]))
-        ez = np.exp(z[neg])
+        out[pos] = 1.0 / (1.0 + xp.exp(-z[pos]))
+        ez = xp.exp(z[neg])
         out[neg] = ez / (1.0 + ez)
 
         return out
     
-    @staticmethod
-    def relu(z):
-        z = np.asarray(z, dtype=float)
-        return np.maximum(0.0, z)
+    def relu(self, z):
+        xp = self.xp
+        z = xp.asarray(z, dtype=float)
+        return xp.maximum(0.0, z)
 
-    @staticmethod
-    def tanh(z):
-        z = np.asarray(z, dtype=float)
-        return np.tanh(z)
+    def tanh(self, z):
+        xp = self.xp
+        z = xp.asarray(z, dtype=float)
+        return xp.tanh(z)
     
-    @staticmethod
-    def leaky_relu(z, alpha=0.01):
-        z = np.asarray(z, dtype=float)
-        return np.where(z > 0, z, alpha * z)
-        
-    @staticmethod
-    def drelu_from_output(a):
-        a = np.asarray(a, dtype=float)
+    def leaky_relu(self, z, alpha=0.01):
+        xp = self.xp
+        z = xp.asarray(z, dtype=float)
+        return xp.where(z > 0, z, alpha * z)
+
+    def drelu_from_output(self, a):
+        xp = self.xp
+        a = xp.asarray(a, dtype=float)
         return (a > 0).astype(float)
         
-    @staticmethod
-    def dsigmoid_from_output(a):
+    def dsigmoid_from_output(self, a):
+        xp = self.xp
         return a * (1 - a)
     
-    @staticmethod
-    def dtanh_from_output(a):
-        a = np.asarray(a, dtype=float)
+    def dtanh_from_output(self, a):
+        xp = self.xp
+        a = xp.asarray(a, dtype=float)
         return 1.0 - a ** 2
 
-    @staticmethod
-    def dleaky_relu_from_output(a, alpha=0.01):
-        a = np.asarray(a, dtype=float)
-        return np.where(a > 0, 1.0, alpha)
+    def dleaky_relu_from_output(self, a, alpha=0.01):
+        xp = self.xp
+        a = xp.asarray(a, dtype=float)
+        return xp.where(a > 0, 1.0, alpha)
     
-    @staticmethod
-    def softmax(Z):
-        Z = np.asarray(Z, dtype=float)
-        Z_shifted = Z - np.max(Z, axis=1, keepdims=True)
-        exp_Z = np.exp(Z_shifted)
-        return exp_Z / np.sum(exp_Z, axis=1, keepdims=True)
+    def softmax(self, Z):
+        xp = self.xp
+        Z = xp.asarray(Z, dtype=float)
+        Z_shifted = Z - xp.max(Z, axis=1, keepdims=True)
+        exp_Z = xp.exp(Z_shifted)
+        return exp_Z / xp.sum(exp_Z, axis=1, keepdims=True)
     
-    @staticmethod
-    def mse_loss(Y, A):
+    def mse_loss(self, Y, A):
+        xp = self.xp
         m = Y.shape[0]
-        return np.sum((A - Y) ** 2) / m
+        return xp.sum((A - Y) ** 2) / m
 
-    @staticmethod
-    def multi_class_cross_entropy_loss(Y, A, epsilon=1e-12):
+    def multi_class_cross_entropy_loss(self, Y, A, epsilon=1e-12):
+        xp = self.xp
         m = Y.shape[0]
-        A = np.clip(A, epsilon, 1.0)
-        return -np.sum(Y * np.log(A)) / m
+        A = xp.clip(A, epsilon, 1.0)
+        return -xp.sum(Y * xp.log(A)) / m
 
-    @staticmethod
-    def binary_cross_entropy_loss(Y, A, epsilon=1e-12):
+    def binary_cross_entropy_loss(self, Y, A, epsilon=1e-12):
+        xp = self.xp
         m = Y.shape[0]
-        A = np.clip(A, epsilon, 1.0 - epsilon)
-        return -np.sum(Y * np.log(A) + (1 - Y) * np.log(1 - A)) / m
+        A = xp.clip(A, epsilon, 1.0 - epsilon)
+        return -xp.sum(Y * xp.log(A) + (1 - Y) * xp.log(1 - A)) / m
         
     def default_hidden_weight_init_strategy(self, hidden_activation_type):
         match hidden_activation_type:
@@ -670,13 +704,18 @@ class NeuralNetwork:
         return y_hat - y
 
     def bernoulli(self, shape, p):
+        xp = self.xp
         keep_prob = 1.0 - p
-        return (np.random.random(shape) < keep_prob).astype(float)
+        return (xp.random.random(shape) < keep_prob).astype(float)
 
     def sum_weight_squares(self, WB):
-        return sum(np.sum(W * W) for W, _ in WB)
+        xp = self.xp
+        return sum(xp.sum(W * W) for W, _ in WB)
 
-    def forward_pass(self, X, hidden_activation_type=HiddenActivationType.RELU, output_activation_type=OutputActivationType.SIGMOID, cfg=None, training_mode=False):
+    def forward_pass(self, X, cfg=None, training_mode=False):
+        output_activation_type = self.__output_activation_type
+        hidden_activation_type = self.__hidden_activation_type
+        
         drop_out_rate = 0.0
         keep_prob = 0.0
         
@@ -722,7 +761,10 @@ class NeuralNetwork:
 
         return A, self.__cache, activation_cache, M
     
-    def backward_propagation(self, Y, cache, activation_cache, M, hidden_activation_type=HiddenActivationType.RELU, cfg=None, training_mode=False):
+    def backward_propagation(self, Y, cache, activation_cache, M, cfg=None, training_mode=False):
+        hidden_activation_type = self.hidden_activation_type
+        
+        xp = self.xp
         drop_out_rate = 0.0
         keep_prob = 0.0
         
@@ -744,7 +786,7 @@ class NeuralNetwork:
             A_prev = cache[l]
             
             dW = (dZ.T @ A_prev) / m
-            db = np.sum(dZ, axis=0, keepdims=True).T / m
+            db = xp.sum(dZ, axis=0, keepdims=True).T / m
             grads[l] = (dW, db)
 
             if l > 0:
@@ -788,6 +830,7 @@ class NeuralNetwork:
                 raise ValueError(f"Unknown Learning Decay Type, supported values are : {self.LearningDecayType.STEP_DECAY}")
 
     def train(self, X, Y, X_val, Y_val, learning_decay_type=None, data_augmentation_type=None, l2=False, dropout=False, cfg=None, log=True, graph=True, finalize=False):
+        xp = self.xp
         if X.ndim != 2:
             raise ValueError("X must be 2D: (samples, features)")
         if Y.ndim != 2:
@@ -826,7 +869,7 @@ class NeuralNetwork:
         best_epoch = None
         steps = []
 
-        random_range = np.random.default_rng(seed)
+        random_range = xp.random.default_rng(seed)
 
         if type(epochs) is not int:
             raise TypeError("iterations must be an integer")
@@ -899,8 +942,8 @@ class NeuralNetwork:
             train_reg_loss = (l2_lambda / (2 * epoch_m)) * self.sum_weight_squares(self.__WB)
             train_total_loss = train_data_loss + train_reg_loss
             _, val_data_loss, val_acc = self.evaluate_dataset(X_val, Y_val)
-            val_losses.append(val_data_loss)
-            val_accuracies.append(val_acc)
+            val_losses.append(self.scalar_to_python(val_data_loss))
+            val_accuracies.append(self.scalar_to_python(val_acc))
 
             if epoch >= 0 and epoch % step == 0:
                 if learning_decay_type is not None:
@@ -961,25 +1004,28 @@ class NeuralNetwork:
         Y_shuf = Y[permutation]
         return X_shuf, Y_shuf
     
-    def evaluate_dataset(self, X, Y, epsilon=None, output_activation_type=OutputActivationType.SIGMOID, hidden_activation_type=HiddenActivationType.RELU):
+    def evaluate_dataset(self, X, Y, epsilon=None):
+        output_activation_type = self.__output_activation_type
+        
+        xp = self.xp
         if epsilon is None:
             epsilon = self.TrainDefaults().epsilon
         
         A, _ = self.predict(X)
         loss = self.loss(Y, A, self.__loss_type, epsilon)
 
-        is_binary = (self.__output_activation_type == self.OutputActivationType.SIGMOID and A.shape[1] == 1)
+        is_binary = (output_activation_type == self.OutputActivationType.SIGMOID and A.shape[1] == 1)
 
         if is_binary:
             prediction = (A >= 0.5).astype(float)
-            accuracy = np.mean(prediction == Y) * 100.0
+            accuracy = xp.mean(prediction == Y) * 100.0
         else:
-            prediction = np.zeros_like(A)
-            prediction[np.arange(A.shape[0]), np.argmax(A, axis=1)] = 1
+            prediction = xp.zeros_like(A)
+            prediction[xp.arange(A.shape[0]), xp.argmax(A, axis=1)] = 1
 
-            predicted_classes = np.argmax(A, axis=1)
-            true_classes = np.argmax(Y, axis=1)
-            accuracy = np.mean(predicted_classes == true_classes) * 100.0
+            predicted_classes = xp.argmax(A, axis=1)
+            true_classes = xp.argmax(Y, axis=1)
+            accuracy = xp.mean(predicted_classes == true_classes) * 100.0
 
         return prediction, loss, accuracy
     
@@ -988,11 +1034,12 @@ class NeuralNetwork:
         return A, cache
 
     def data_augmentation(self, X, Y, augmentation_type, random_range=None):
+        xp = self.xp
         if random_range is None:
-            random_range = np.random.default_rng()
+            random_range = xp.random.default_rng()
 
-        X = np.asarray(X, dtype=float)
-        Y = np.asarray(Y)
+        X = xp.asarray(X, dtype=float)
+        Y = xp.asarray(Y)
 
         X_aug = X.copy()
         Y_aug = Y.copy()
@@ -1010,19 +1057,19 @@ class NeuralNetwork:
                     1.0 + measurement_strength,
                     size=X_aug.shape
                 )
-                X_aug = np.maximum(0.0, X_aug * scale)
+                X_aug = xp.maximum(0.0, X_aug * scale)
 
             case self.DataAugmentation.SAME_CLASS_INTERPOLATION:
                 if Y_aug.shape[1] == 1:
                     labels = Y_aug.flatten().astype(int)
                 else:
-                    labels = np.argmax(Y_aug, axis=1)
+                    labels = xp.argmax(Y_aug, axis=1)
 
                 synthetic_x = []
                 synthetic_y = []
 
-                for label in np.unique(labels):
-                    indices = np.where(labels == label)[0]
+                for label in xp.unique(labels):
+                    indices = xp.where(labels == label)[0]
                     num_synthetic = len(indices) // 2
 
                     for _ in range(num_synthetic):
@@ -1040,13 +1087,23 @@ class NeuralNetwork:
                         synthetic_y.append(y_new.reshape(-1, 1))
 
                 if synthetic_x:
-                    X_aug = np.concatenate([X_aug] + synthetic_x, axis=0)
-                    Y_aug = np.concatenate([Y_aug] + synthetic_y, axis=0)
+                    X_aug = xp.concatenate([X_aug] + synthetic_x, axis=0)
+                    Y_aug = xp.concatenate([Y_aug] + synthetic_y, axis=0)
 
             case _:
                 raise ValueError(f"Unknown Data Augmentation Type, supported values are : {self.DataAugmentation.MEASUREMENT_NOISE}, {self.DataAugmentation.JITTER_NOISE}, {self.DataAugmentation.SAME_CLASS_INTERPOLATION}")
 
         return X_aug, Y_aug
+
+    def scalar_to_python(self, x):
+        if self.on_gpu:
+            return float(cp.asnumpy)
+        return float(x)
+    
+    def cpu_weights(self):
+        if not self.on_gpu:
+            return self.__WB
+        return [(cp.asnumpy(W), cp.asnumpy(b)) for W, b in self.__WB]
     
     @staticmethod
     def one_hot_encode(Y, classes):
@@ -1351,6 +1408,15 @@ if __name__ == "__main__":
         output_activation_type=NeuralNetwork.OutputActivationType.SOFTMAX,
         hidden_activation_type=NeuralNetwork.HiddenActivationType.LEAKY_RELU
     )
+    
+    X_train = model.to_device(X_train, dtype=model.xp.float32)
+    Y_train = model.to_device(Y_train, dtype=model.xp.float32)
+
+    X_valid = model.to_device(X_valid, dtype=model.xp.float32)
+    Y_valid = model.to_device(Y_valid, dtype=model.xp.float32)
+
+    X_test = model.to_device(X_test, dtype=model.xp.float32)
+    Y_test = model.to_device(Y_test, dtype=model.xp.float32)
 
     results = model.train(X_train_small, Y_train_small, X_valid, Y_valid, finalize=True, l2=True, dropout=True, graph=True)
     model.save("mnist_small")
