@@ -100,6 +100,7 @@ class NeuralNetwork:
         start_width_heuristic_cap: int = 512
         output_aware_multiplier: int = 4
         expansion_multiplier: int = 2
+        prediction_threshold: int = 1000
     
     @dataclass
     class TrainResults:
@@ -121,6 +122,10 @@ class NeuralNetwork:
         json_path: str = "data/json/"
         pickle_path: str = "data/pickle/"
         default_data: str = "Untitled"
+        prediction_path: str = "data/prediction/"
+        test_prediction_file: str = "test_predictions"
+        validation_prediction_file: str = "validation_predictions"
+        train_prediction_file: str = "train_predictions"
     
     @dataclass
     class Extensions:
@@ -128,6 +133,7 @@ class NeuralNetwork:
         npz: str = ".npz"
         json: str = ".json"
         pickle: str = ".pkl"
+        text: str = ".txt"
     
     @dataclass
     class Encodings:
@@ -736,7 +742,7 @@ class NeuralNetwork:
         if loss_type == self.LossType.BINARY_CROSS_ENTROPY:
             return self.binary_cross_entropy_loss(Y, A, epsilon)
 
-        is_binary = (self.__output_activation_type == self.OutputActivationType.SIGMOID and A.shape[0] == 1)
+        is_binary = (self.__output_activation_type == self.OutputActivationType.SIGMOID and A.shape[1] == 1)
 
         if is_binary:
             return self.binary_cross_entropy_loss(Y, A, epsilon)
@@ -873,7 +879,25 @@ class NeuralNetwork:
             case _:
                 raise ValueError(f"Unknown Learning Decay Type, supported values are : {self.LearningDecayType.STEP_DECAY}")
 
-    def train(self, X, Y, X_val, Y_val, learning_decay_type=None, data_augmentation_type=None, l2=False, dropout=False, early_stopping=False, restore_best=False, cfg=None, log=True, graph=True, finalize=False):
+    def train(
+        self, 
+        X, 
+        Y, 
+        X_val, 
+        Y_val,
+        log=True,
+        graph=True,
+        finalize=False,
+        _log_predictions = False,
+        early_stopping=False, 
+        restore_best=False, 
+        dropout=False,
+        l2=False,
+        cfg=None, 
+        _encoding=None,
+        learning_decay_type=None,
+        data_augmentation_type=None,
+    ):
         xp = self.xp
         if X.ndim != 2:
             raise ValueError("X must be 2D: (samples, features)")
@@ -897,6 +921,14 @@ class NeuralNetwork:
         decay_factor = cfg.decay_factor
         batch_size = cfg.batch_size
         seed = cfg.seed
+        
+        if _log_predictions:
+            tr = self.Paths
+            train_prediction_file = tr.train_prediction_file
+            validation_prediction_file = tr.validation_prediction_file
+            test_prediction_file = tr.test_prediction_file
+            prediction_path = tr.prediction_path
+            prediction_threshold = cfg.prediction_threshold
 
         base_m = X.shape[0]
 
@@ -986,13 +1018,16 @@ class NeuralNetwork:
             
             train_data_loss = train_data_loss / epoch_m
             # train_reg_loss = (l2_lambda / 2) * self.sum_weight_squares(self.__WB)
-            train_reg_loss = (l2_lambda / (2 * epoch_m)) * self.sum_weight_squares(self.__WB)
+            
+            if l2:
+                train_reg_loss = (l2_lambda / (2 * epoch_m)) * self.sum_weight_squares(self.__WB)
             train_total_loss = train_data_loss + train_reg_loss
             _, val_data_loss, val_acc = self.evaluate_dataset(X_val, Y_val)
             
             train_data_loss_py = self.scalar_to_python(train_data_loss)
             train_reg_loss_py = self.scalar_to_python(train_reg_loss)
             train_total_loss_py = self.scalar_to_python(train_total_loss)
+            
             val_data_loss_py = self.scalar_to_python(val_data_loss)
             val_acc_py = self.scalar_to_python(val_acc)
             
@@ -1000,13 +1035,6 @@ class NeuralNetwork:
             val_accuracies.append(val_acc_py)
 
             if epoch >= 0 and epoch % step == 0:
-                g0 = grads[0][0]
-                gL = grads[-1][0]
-                print(
-                    "grad_norm_first =", self.scalar_to_python(xp.linalg.norm(g0)),
-                    "grad_norm_last =", self.scalar_to_python(xp.linalg.norm(gL))
-                )
-                
                 if learning_decay_type is not None:
                     current_lr = self.learning_decay(initial_lr, decay_factor, epoch, step, learning_decay_type)
 
@@ -1052,13 +1080,19 @@ class NeuralNetwork:
             plt.show()
         
         if finalize:
-            predictions, loss, accuracy = self.evaluate_dataset(X, Y)
-            print("\nFinal Predictions : ")
-            first_sample, last_sample, first_prediction, last_prediction = Y[0], Y[-1], predictions[0], predictions[-1]
-            print(f"First Sample : {np.where(first_sample == 1)[0]}, Prediction : {np.where(first_prediction == 1)[0]}")
-            print(f"Last Sample : {np.where(last_sample == 1)[0]}, Prediction : {np.where(last_prediction == 1)[0]}\n")
-            print("\nFinal Loss : ", loss)
-            print("\nFinal Accuracy : ", accuracy)
+            print("\nFinal Results : \n")
+            train_pred, train_loss, train_acc = model.evaluate_dataset(X_train, Y_train)
+            val_pred, val_loss, val_acc = model.evaluate_dataset(X_valid, Y_valid)
+            test_pred, test_loss, test_acc = model.evaluate_dataset(X_test, Y_test)
+            
+            print("Train:", train_loss, train_acc)
+            print("Valid:", val_loss, val_acc)
+            print("Test :", test_loss, test_acc)
+
+            if _log_predictions:
+                self.log_predictions(Y_train, train_pred, _log_predictions, train_prediction_file, prediction_path, prediction_threshold, _encoding)
+                self.log_predictions(Y_valid, val_pred, _log_predictions, validation_prediction_file, prediction_path, prediction_threshold, _encoding)
+                self.log_predictions(Y_test, test_pred, _log_predictions, test_prediction_file, prediction_path, prediction_threshold, _encoding)
         
         return self.TrainResults(
             losses=losses, 
@@ -1070,6 +1104,32 @@ class NeuralNetwork:
             accuracy=final_accuracy, 
             final_learning_rate=current_lr
         )
+    
+    def log_predictions(self, Y, predictions, _log_predictions, prediction_file, prediction_path, prediction_threshold, _encoding):
+        if prediction_path is not None and not os.path.exists(prediction_path):
+            os.mkdir(prediction_path)
+
+        if _log_predictions:
+            prediction_file_name = prediction_file + self.Extensions.text
+            prediction_file_path = prediction_path + prediction_file_name
+            
+            if _encoding is None:
+                _encoding = self.Encodings().UTF_8
+
+            with open(prediction_file_path, "w", encoding=_encoding) as f:
+                for i in range(len(predictions)):
+                    sample = Y[i]
+                    prediction = predictions[i]
+                    sample_result = np.where(sample == 1)[0]
+                    prediction_result = np.where(prediction == 1)[0]
+                    f.write(f"Sample : {sample_result}, Prediction : {prediction_result} {"correct" if sample_result == prediction_result else "failed"}\n")
+                
+            print(f"\nFirst <{prediction_threshold} predictions are written in {prediction_file_name}")  
+        else:
+            first_sample, last_sample, first_prediction, last_prediction = Y[0], Y[-1], predictions[0], predictions[-1]
+            print("Detailed Prediction Logging disabled, falling back to the first and last sample predictions : ")
+            print(f"First Sample : {np.where(first_sample == 1)[0]}, Prediction : {np.where(first_prediction == 1)[0]}")
+            print(f"Last Sample : {np.where(last_sample == 1)[0]}, Prediction : {np.where(last_prediction == 1)[0]}\n")
 
     def shuffle_dataset(self, X, Y, size, random_range):
         xp = self.xp
@@ -1240,10 +1300,6 @@ class NeuralNetwork:
         X_train = X_train_3D.reshape((X_train_3D.shape[0], -1))
         X_valid = X_valid_3D.reshape((X_valid_3D.shape[0], -1))
         X_test = X_test_3D.reshape((X_test_3D.shape[0], -1))
-
-        X_train /= 255.0
-        X_valid /= 255.0
-        X_test /= 255.0
         
         return {
             "X_train": X_train,
@@ -1256,15 +1312,15 @@ class NeuralNetwork:
     
     @classmethod
     def save_to_npz(cls, filename=None, compressed=False, **kwargs):
-        npz_path = cls.TrainResults.npz_path
+        npz_path = cls.Paths.npz_path
         if filename is None:
-            filename = npz_path
+            filename = cls.Paths.default_data
         
         npz_extension = cls.Extensions.npz
         if not filename.endswith(npz_extension):
             filename = filename + npz_extension
             
-        npz_file_path = cls.TrainResults().npz_path
+        npz_file_path = npz_path
         if npz_file_path is not None and not os.path.exists(npz_file_path):
             os.mkdir(npz_file_path)
 
@@ -1352,7 +1408,7 @@ class NeuralNetwork:
     @classmethod
     def records_to_split(cls, records):
         X = np.array([r["features"] for r in records], dtype=np.float32)
-        Y = np.array([r["labels"] for r in records], dtype=np.int64)
+        Y = np.array([r["label"] for r in records], dtype=np.int64)
         return X, Y
     
     @classmethod
@@ -1448,8 +1504,9 @@ class NeuralNetwork:
         }
 
 if __name__ == "__main__":
-    number_of_classes = 10
+    number_of_classes = 2
     dataset = NeuralNetwork.load_from_npz('data/npz/MNIST.npz')
+    # prepared_dataset = dataset
     prepared_dataset = NeuralNetwork.prepare_datasets(dataset, number_of_classes)
     
     X_train = prepared_dataset["X_train"]
@@ -1476,15 +1533,15 @@ if __name__ == "__main__":
     # Y_test_one_hot = NeuralNetwork.one_hot_encode(Y_test, 10)
     
     number_of_features = X_train.shape[1]
-    layers = [128, 64, number_of_classes]
+    layers = [4, 1, number_of_classes]
     
     model = NeuralNetwork(
         number_of_features,
         layers,
-        loss_type=NeuralNetwork.LossType.MULTI_CLASS_CROSS_ENTROPY,
-        output_activation_type=NeuralNetwork.OutputActivationType.SOFTMAX,
+        loss_type=NeuralNetwork.LossType.BINARY_CROSS_ENTROPY,
+        output_activation_type=NeuralNetwork.OutputActivationType.SIGMOID,
         hidden_activation_type=NeuralNetwork.HiddenActivationType.RELU,
-        device=NeuralNetwork.Device.CUDA
+        device=NeuralNetwork.Device.CPU
     )
     
     X_train = model.to_device(X_train, dtype=model.xp.float32)
@@ -1498,43 +1555,44 @@ if __name__ == "__main__":
 
     cfg = NeuralNetwork.TrainDefaults()
     
-    limit = 32
-    cfg.step = 20
-    cfg.epochs = 500
-    cfg.batch_size = 32
-    cfg.learning_rate = 0.1
+    # limit = 32
+    cfg.step = 100
+    cfg.epochs = 1000
+    cfg.batch_size = 4
+    cfg.learning_rate = 0.01
     
     # X_train_small = X_train[:limit]
     # Y_train_small = Y_train[:limit]
     
-    perm = model.xp.random.permutation(X_train.shape[0])[:limit]
-    X_train_small = X_train[perm]
-    Y_train_small = Y_train[perm]
+    # perm = model.xp.random.permutation(X_train.shape[0])[:limit]
+    # X_train_small = X_train[perm]
+    # Y_train_small = Y_train[perm]
 
     results = model.train(
-        X_train_small, 
-        Y_train_small, 
+        X_train, 
+        Y_train, 
         X_valid, 
         Y_valid,
         learning_decay_type=None,
         data_augmentation_type=None,
         cfg=cfg,
-        early_stopping=True,
-        restore_best=True,
+        early_stopping=False,
+        restore_best=False,
         finalize=True, 
         l2=False, 
         dropout=False, 
-        graph=False
+        graph=False,
+        _log_predictions=True
     )
     
-    pred_probs, _ = model.predict(X_train_small)
+    # pred_probs, _ = model.predict(X_train_small)
 
-    xp = model.xp
-    true_classes = xp.argmax(Y_train_small, axis=1)
-    pred_classes = xp.argmax(pred_probs, axis=1)
+    # xp = model.xp
+    # true_classes = xp.argmax(Y_train_small, axis=1)
+    # pred_classes = xp.argmax(pred_probs, axis=1)
 
-    print("True label counts:", model.tp_cpu(xp.bincount(true_classes, minlength=10)))
-    print("Pred label counts:", model.tp_cpu(xp.bincount(pred_classes, minlength=10)))
+    # print("True label counts:", model.tp_cpu(xp.bincount(true_classes, minlength=10)))
+    # print("Pred label counts:", model.tp_cpu(xp.bincount(pred_classes, minlength=10)))
     
     # model.save_model("mnist_small")
 
@@ -1549,4 +1607,3 @@ if __name__ == "__main__":
     # if loaded_model is not None:
     #     results = loaded_model.evaluate_dataset(X_test, Y_test)
     #     print(results[1])
-    
