@@ -92,6 +92,7 @@ class NeuralNetwork:
         reg: float = 1e-4
         epsilon: float = 1e-12
         step: int = 100
+        threshold: float = 0.5
         drop_out_rate: float = 0.03
         l2_lambda: float = 0.03
         batch_size: int = 512
@@ -1213,30 +1214,50 @@ class NeuralNetwork:
         Y_shuf = Y[permutation]
         return X_shuf, Y_shuf
     
-    def evaluate_dataset(self, X, Y, epsilon=None):
-        output_activation_type = self.__output_activation_type
-        
+    def evaluate_dataset(self, X, Y, epsilon=None, threshold=None):
+        output_activation_type = self.output_activation_type
         xp = self.xp
+         
         if epsilon is None:
             epsilon = self.TrainDefaults().epsilon
         
         A, _ = self.predict(X)
         loss = self.loss(Y, A, epsilon)
-
-        is_binary = (output_activation_type == self.OutputActivationType.SIGMOID and A.shape[1] == 1)
-
+        
+        prediction, is_binary = self.predict_classes(X, output_activation_type, xp, threshold)
+        
         if is_binary:
-            prediction = (A >= 0.5).astype(float)
             accuracy = xp.mean(prediction == Y) * 100.0
-        else:
-            prediction = xp.zeros_like(A)
-            prediction[xp.arange(A.shape[0]), xp.argmax(A, axis=1)] = 1
-
+        else: 
             predicted_classes = xp.argmax(A, axis=1)
             true_classes = xp.argmax(Y, axis=1)
             accuracy = xp.mean(predicted_classes == true_classes) * 100.0
 
         return prediction, loss, accuracy
+
+    def predict_classes(self, X, output_activation_type=None, xp=None, threshold=None):
+        if output_activation_type is None:
+            output_activation_type = self.__output_activation_type
+        if xp is None:
+            xp = self.xp
+        
+        A = self.predict_proba(X)
+        
+        is_binary = (output_activation_type == self.OutputActivationType.SIGMOID and A.shape[1] == 1)
+
+        if threshold is None:
+            threshold = self.TrainDefaults().threshold
+        if is_binary:
+            prediction = (A >= threshold).astype(float)
+            return prediction, is_binary
+        else:
+            prediction = xp.zeros_like(A)
+            prediction[xp.arange(A.shape[0]), xp.argmax(A, axis=1)] = 1
+            return prediction, is_binary
+
+    def predict_proba(self, X):
+        A, _ = self.predict(X)
+        return A
     
     def predict(self, x):
         A, cache, _, _ = self.forward_pass(x, training_mode=False)
