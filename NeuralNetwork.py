@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 
 from enum import Enum
 from dataclasses import dataclass
+from datetime import datetime
 
 import numpy as np
 
@@ -102,6 +103,7 @@ class NeuralNetwork:
         expansion_multiplier: int = 2
         prediction_tolerance: int = 100
         prediction_threshold: int = 1000
+        default_format_version: str = "1.0.0"
     
     @dataclass
     class TrainResults:
@@ -1327,8 +1329,24 @@ class NeuralNetwork:
             return None
         vector = one_hot.argmax(axis=1)
         return vector
+    
+    def get_metadata(self, format_version=None, train_history=None):
+        if format_version is None:
+            format_version = self.TrainDefaults().default_format_version
+        state = {
+            "format_version": format_version,
+            "saved_at": datetime.utcnow().isoformat() + "Z",
+            "number_of_layers": self.__L,
+            "hidden_activation_type": self.__hidden_activation_type.name,
+            "output_activation_type": self.__output_activation_type.name,
+            "loss_type": self.__loss_type.name,
+            "parameter_count": self.count_parameters()
+        }
+        if train_history is not None:
+            state["train_history"] = train_history
+        return state
 
-    def save_model(self, file_name):
+    def save_model(self, file_name, meta=False, format_version=None, train_history=False):
         if not file_name.endswith(".pkl"):
             file_name = file_name + ".pkl"
 
@@ -1341,14 +1359,24 @@ class NeuralNetwork:
         file_path = modelpath + file_name
         with open(file_path, "wb") as f:
             pickle.dump(model_cpu, f)
+        
+        if meta:
+            meta_data = self.get_metadata(format_version, train_history)
+            meta_data_path = modelpath + file_name + self.Paths.meta_data_flair 
+            with open(meta_data_path, "wb") as f:
+                pickle.dump(meta_data, f)
 
     @classmethod
-    def load_model(cls, model_path, device=None):
+    def load_model(cls, model_path, meta_data_path, device=None, meta=False):
         with open(model_path, "rb") as f:
             model = pickle.load(f)
         if device is not None:
             model.move_to(device)
-        return model
+        meta_data = None
+        if meta:
+            with open(meta_data_path, "rb") as f:
+                meta_data = pickle.load(f)
+        return model, meta_data
     
     @classmethod
     def load_from_npz(cls, npz_path):
