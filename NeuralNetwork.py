@@ -245,6 +245,8 @@ class NeuralNetwork:
         self.__L = len(layers)
         self.__cache = []
         self.__WB = []
+        self.__input_width = number_of_features
+        self.__layers = layers.copy()
         self.__loss_type = loss_type
         self.__output_activation_type = output_activation_type
         self.__hidden_activation_type = hidden_activation_type
@@ -348,6 +350,14 @@ class NeuralNetwork:
     @property
     def WB(self):
         return self.__WB
+    
+    @property
+    def input_width(self):
+        return self.__input_width
+    
+    @property
+    def layers(self):
+        return self.__layers
 
     @property
     def output_activation_type(self):
@@ -1618,6 +1628,17 @@ class NeuralNetwork:
             "X_test": X_test,
             "Y_test": Y_test,
         }
+    
+    def __repr__(self):
+        return (
+            f"NeuralNetwork("
+            f"input_width={self.__input_width}, "
+            f"layers={self.__layers}, "
+            f"hidden_activation={self.__hidden_activation_type.name}, "
+            f"output_activation={self.__output_activation_type.name}, "
+            f"loss={self.__loss_type.name}, "
+            f"parameters={self.parameter_count()})"
+        )
 
 
 if __name__ == "__main__":
