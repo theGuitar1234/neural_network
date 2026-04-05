@@ -895,6 +895,37 @@ class NeuralNetwork:
             case _:
                 raise ValueError(f"Unknown Learning Decay Type, supported values are : {self.LearningDecayType.STEP_DECAY}")
 
+    def count_parameters(self):
+        number_of_parameters = 0
+        for W, b in self.__WB:
+            number_of_parameters = W.size + b.size
+        return number_of_parameters
+    
+    def parameters_breakdown(self):
+        breakdown = []
+        for i, (W, b) in enumerate(self.__WB, start=1):
+            total_parameters = W.size + b.size
+            breakdown.append({
+                "layer": i,
+                "weight_shape": W.shape,
+                "bias_shape": b.shape,
+                "weight_parameters": W.size,
+                "bias_parameters": b.size,
+                "total_parameters": total_parameters
+            })
+        return breakdown
+    
+    def summary(self):
+        print("\nNeural Network Summary\n")
+        print(f"Number of layers: {self.__L}")
+        print(f"Hidden Activation : {self.__hidden_activation_type.name}")
+        print(f"Output Activation : {self.__output_activation_type.name}")
+        print(f"Loss Type : {self.__loss_type.name}")
+        print(f"Total Number of Parameters : {self.count_parameters()}")
+        print()
+        breakdown = self.parameters_breakdown()
+        print(breakdown)
+    
     def train(
         self, 
         X_train, 
@@ -1165,8 +1196,6 @@ class NeuralNetwork:
             print("Detailed Prediction Logging disabled, falling back to the first and last sample predictions : ")
             print(f"First Sample : {np.where(first_sample == 1)[0]}, Prediction : {np.where(first_prediction == 1)[0]}")
             print(f"Last Sample : {np.where(last_sample == 1)[0]}, Prediction : {np.where(last_prediction == 1)[0]}\n")
-        
-        return True
     
     def shuffle_dataset(self, X, Y, size, random_range):
         xp = self.xp
@@ -1572,6 +1601,8 @@ if __name__ == "__main__":
         device=NeuralNetwork.Device.CPU
     )
     
+    model.summary()
+    
     X_train = model.to_device(X_train, dtype=model.xp.float32)
     Y_train = model.to_device(Y_train, dtype=model.xp.float32)
 
@@ -1596,28 +1627,28 @@ if __name__ == "__main__":
     # X_test = X_test[:limit]
     # Y_test = Y_test[:limit]
 
-    results = model.train(
-        X_train, 
-        Y_train, 
-        X_valid, 
-        Y_valid,
-        X_test,
-        Y_test,
-        learning_decay_type=None,
-        data_augmentation_type=None,
-        cfg=cfg,
-        early_stopping=False,
-        restore_best=False,
-        finalize=True, 
-        l2=False, 
-        dropout=False,
-        graph=False,
-        _log_predictions=True
-    )
+    # results = model.train(
+    #     X_train, 
+    #     Y_train, 
+    #     X_valid, 
+    #     Y_valid,
+    #     X_test,
+    #     Y_test,
+    #     learning_decay_type=None,
+    #     data_augmentation_type=None,
+    #     cfg=cfg,
+    #     early_stopping=False,
+    #     restore_best=False,
+    #     finalize=True, 
+    #     l2=False, 
+    #     dropout=False,
+    #     graph=False,
+    #     _log_predictions=True
+    # )
     
-    model.save_model("mnist_small")
+    # model.save_model("mnist_small")
 
-    loaded_model = NeuralNetwork.load_model(
-        "models/mnist_small.pkl",
-        device=NeuralNetwork.Device.CUDA
-    )
+    # loaded_model = NeuralNetwork.load_model(
+    #     "models/mnist_small.pkl",
+    #     device=NeuralNetwork.Device.CPU
+    # )
