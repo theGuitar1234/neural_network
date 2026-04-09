@@ -76,10 +76,6 @@ class NeuralNetwork:
         INVERSE_DECAY = 2
         EXPONENTIAL_DECAY = 3
     
-    class Optimizers(Enum):
-        GDC = 1
-        MOMENTUM = 2
-    
     class Datasets(Enum):
         NPZ = 1
         JSON = 2
@@ -106,7 +102,6 @@ class NeuralNetwork:
         start_width_heuristic_cap: int = 512
         output_aware_multiplier: int = 4
         expansion_multiplier: int = 2
-        momentum_coefficient: float = 0.9
         prediction_tolerance: int = 100
         prediction_threshold: int = 1000
         default_format_version: str = "1.0.0"
@@ -885,49 +880,14 @@ class NeuralNetwork:
                 dZ = dA_prev * self.hidden_derivative_from_output(A_prev)
 
         return grads
-    
-    def momentum(self, grads, layer, cfg=None):
-        if cfg is None:
-            cfg = self.TrainDefaults()
-        
-        momentum_coefficient = cfg.momentum_coefficient
-        
-        dW, db = grads        
-        self.velocity_dW[layer] = momentum_coefficient * self.velocity_dW[layer] + (1 - momentum_coefficient) * dW
-        self.velocity_db[layer] = momentum_coefficient * self.velocity_db[layer] + (1 - momentum_coefficient) * db
-    
-    def init_optimizer_state(self):
-        xp = self.xp
-        self.velocity_dW = []
-        self.velocity_db = []
-        for W, b in self.__WB:
-            self.velocity_dW.append(xp.zeros_like(W))
-            self.velocity_db.append(xp.zeros_like(b))
 
-    def optimizer(self, grads, learning_rate, optimizer_type=None, cfg=None):
-        if cfg is None:
-            cfg = self.TrainDefaults()
-        if optimizer_type is None:
-            optimizer_type = self.Optimizers.GDC
-        
+    def update_parameters(self, grads, learning_rate):
         for l in range(self.__L):
             W, b = self.__WB[l]
-            match optimizer_type:
-                case self.Optimizers.GDC:
-                    dW, db = grads[l]
-                    self.update_parameters(W, b, dW, db, learning_rate, l)
-                case self.Optimizers.MOMENTUM:
-                    if not hasattr(self, "velocity_dW") or not hasattr(self, "velocity_db"):
-                        self.init_optimizer_state()
-                    self.momentum(grads[l], l, cfg)
-                    self.update_parameters(W, b, self.velocity_dW[l], self.velocity_db[l], learning_rate, l)
-                case _:
-                    raise ValueError(f"Invalid Optimizer, supported values are : {self.Optimizers.MOMENTUM.name}")
-
-    def update_parameters(self, W, b, dW, db, learning_rate, layer):
-        self.__WB[layer] = (W - learning_rate * dW,
+            dW, db = grads[l]
+            self.__WB[l] = (W - learning_rate * dW,
                             b - learning_rate * db)
-
+    
     def step_decay(self, initial_lr, decay_factor, epoch, step):
         return initial_lr * (decay_factor ** (epoch // step))
 
@@ -987,9 +947,8 @@ class NeuralNetwork:
         Y_valid,
         X_test,
         Y_test,
-        log=False,
-        graph=False,
-        real_time_tracking=False,
+        log=True,
+        graph=True,
         finalize=False,
         _log_predictions = False,
         early_stopping=False, 
@@ -999,7 +958,6 @@ class NeuralNetwork:
         cfg=None, 
         learning_decay_type=None,
         data_augmentation_type=None,
-        optimizer_type=None
     ):
         xp = self.xp
         if X_train.ndim != 2:
@@ -1111,9 +1069,9 @@ class NeuralNetwork:
                         dW = dW + (l2_lambda / batch_m) * W
                         grads_with_L2.append((dW, db))
     
-                    self.optimizer(grads_with_L2, current_lr, optimizer_type, cfg)
+                    self.update_parameters(grads_with_L2, current_lr)
                 else:
-                    self.optimizer(grads, current_lr, optimizer_type, cfg)
+                    self.update_parameters(grads, current_lr)
                 
                 batch_loss = self.loss(Y_batch, A, epsilon)
                 train_data_loss += batch_loss * (end - batch_start)
@@ -1150,16 +1108,9 @@ class NeuralNetwork:
                         "val_acc =", round(val_acc_py, 4)
                     )
 
-                if graph or real_time_tracking:
+                if graph:
                     losses.append(train_data_loss_py)
                     steps.append(epoch)
-                if not graph and real_time_tracking:
-                    plt.ion()
-                    plt.title(self.TrainResults.figure_title)
-                    plt.plot(steps, losses)
-                    plt.xlabel("iteration")
-                    plt.ylabel("loss")
-                    plt.pause(0.05)
 
             if val_data_loss_py < best_val_loss:
                 best_val_loss = val_data_loss_py
@@ -1179,6 +1130,14 @@ class NeuralNetwork:
         _, final_data_loss, final_accuracy = self.evaluate_dataset(X_train, Y_train)
         final_reg_loss = (l2_lambda / (2 * X_train.shape[0])) * self.sum_weight_squares(self.__WB)
         final_loss = final_data_loss + final_reg_loss
+
+        if graph:
+            plt.figure(self.TrainResults.figure_title)
+            plt.plot(steps, losses)
+            plt.xlabel("iteration")
+            plt.ylabel("loss")
+            plt.title("Training Loss")
+            plt.show()
         
         if finalize:
             print("\nFinal Results : \n")
@@ -1223,13 +1182,6 @@ class NeuralNetwork:
             if Y_test is not None and test_pred is not None:
                 self.log_predictions(Y_test, test_pred, _log_predictions, test_prediction_file, prediction_path, prediction_tolerance, prediction_threshold, _encoding)
         
-        if graph and not real_time_tracking:
-            plt.title(self.TrainResults.figure_title)
-            plt.plot(steps, losses)
-            plt.xlabel("iteration")
-            plt.ylabel("loss")
-            plt.show()
-                    
         return train_results
             
     def log_predictions(self, Y, predictions, _log_predictions, prediction_file, prediction_path, prediction_tolerance, prediction_threshold, _encoding):
@@ -1703,12 +1655,12 @@ if __name__ == "__main__":
     Y_test = prepared_dataset["Y_test"]
 
     number_of_features = X_train.shape[1]
-    # layers = [4, 1, number_of_classes]
-    layers = NeuralNetwork.init_layers(
-        X=X_train,
-        number_of_hidden_layers=10,
-        output_width=number_of_classes
-    )
+    layers = [4, 1, number_of_classes]
+    # layers = NeuralNetwork.init_layers(
+    #     X=X_train,
+    #     number_of_hidden_layers=10,
+    #     output_width=10    
+    # )
     
     model = NeuralNetwork(
         number_of_features,
@@ -1719,7 +1671,7 @@ if __name__ == "__main__":
         device=NeuralNetwork.Device.CPU
     )
     
-    # model.summary()
+    model.summary()
     
     X_train = model.to_device(X_train, dtype=model.xp.float32)
     Y_train = model.to_device(Y_train, dtype=model.xp.float32)
@@ -1755,16 +1707,13 @@ if __name__ == "__main__":
         learning_decay_type=None,
         data_augmentation_type=None,
         cfg=cfg,
-        log=True,
         early_stopping=False,
         restore_best=False,
         finalize=True, 
         l2=False, 
         dropout=False,
         graph=True,
-        real_time_tracking=False,
-        _log_predictions=False,
-        optimizer_type=NeuralNetwork.Optimizers.MOMENTUM
+        _log_predictions=True
     )
     
     # model.save_model("mnist_small")
