@@ -94,10 +94,10 @@ class NeuralNetwork:
     
     @dataclass
     class TrainDefaults:
-        learning_rate: float = 0.03
+        learning_rate: float = 1e-2
         epochs: int = 5000
         reg: float = 1e-4
-        epsilon: float = 1e-12
+        epsilon: float = 1e-8
         step: int = 100
         threshold: float = 0.5
         drop_out_rate: float = 0.03
@@ -908,6 +908,24 @@ class NeuralNetwork:
         dW, db = grads
         self.rms_dW[layer] = rms_coefficient * self.rms_dW[layer] + (1 - rms_coefficient) * (dW*dW)
         self.rms_db[layer] = rms_coefficient * self.rms_db[layer] + (1 - rms_coefficient) * (db*db)
+    
+    def adam(self, grads, layer, cfg=None):
+        if cfg is None:
+            cfg = self.TrainDefaults()
+        momentum_coefficient = cfg.momentum_coefficient
+        rms_coefficient = cfg.rms_coefficient
+        
+        dW, db = grads
+        
+        self.momentum((dW, db), layer, cfg)
+        self.rms_prop((dW, db), layer, cfg)
+        
+        velocity_dW = self.velocity_dW[layer] / (1 - momentum_coefficient**self.t)
+        velocity_db = self.velocity_db[layer] / (1 - momentum_coefficient**self.t)
+        rms_dW = self.rms_dW[layer] / (1 - rms_coefficient**self.t)
+        rms_db = self.rms_db[layer] / (1 - rms_coefficient**self.t)
+        
+        return velocity_dW, velocity_db, rms_dW, rms_db
 
     def init_momentum_state(self):
         xp = self.xp
@@ -924,6 +942,9 @@ class NeuralNetwork:
         for W, b in self.__WB:
             self.rms_dW.append(xp.zeros_like(W))
             self.rms_db.append(xp.zeros_like(b))
+    
+    def init_adam_state(self):
+        self.t = 0
 
     def optimizer(self, grads, learning_rate, optimizer_type=None, cfg=None):
         xp = self.xp
@@ -956,10 +977,9 @@ class NeuralNetwork:
                     if not hasattr(self, "rms_dW") or not hasattr(self, "rms_db"):
                         self.init_rms_state()
                     dW, db = grads[l]
-                    self.momentum((dW, db), l, cfg)
-                    self.rms_prop((dW, db), l, cfg)
+                    velocity_dW, velocity_db, rms_dW, rms_db = self.adam((dW, db), l, cfg)
                     epsilon = cfg.epsilon
-                    self.update_parameters(W, b, self.velocity_dW[l]/(xp.sqrt(self.rms_dW[l]) + epsilon), self.velocity_db[l]/(xp.sqrt(self.rms_db[l]) + epsilon), learning_rate, l)
+                    self.update_parameters(W, b, velocity_dW/(xp.sqrt(rms_dW) + epsilon), velocity_db/(xp.sqrt(rms_db) + epsilon), learning_rate, l)
                 case _:
                     raise ValueError(f"Invalid Optimizer, supported values are : {self.Optimizers.MOMENTUM.name}, {self.Optimizers.RMS_PROP}, {self.Optimizers.ADAM}")
 
@@ -1125,8 +1145,15 @@ class NeuralNetwork:
                 X_epoch, Y_epoch = X_shuffle, Y_shuffle
             
             epoch_m = X_epoch.shape[0]
+            
+            if optimizer_type is self.Optimizers.ADAM and not hasattr(self, "t"):
+                self.init_adam_state()
 
             for batch_start in range(0, epoch_m, batch_size):
+                
+                if optimizer_type is self.Optimizers.ADAM and hasattr(self, "t"):
+                    self.t += 1
+
                 end = min(batch_start + batch_size, epoch_m)
 
                 X_batch = X_epoch[batch_start:end, :]
@@ -1756,10 +1783,10 @@ if __name__ == "__main__":
         layers,
         loss_type=NeuralNetwork.LossType.BINARY_CROSS_ENTROPY,
         output_activation_type=NeuralNetwork.OutputActivationType.SIGMOID,
-        hidden_activation_type=NeuralNetwork.HiddenActivationType.RELU,
+        hidden_activation_type=NeuralNetwork.HiddenActivationType.LEAKY_RELU,
         device=NeuralNetwork.Device.CPU,
-        hidden_weight_init_strategy=NeuralNetwork.WeightInitStrategy.ZERO,
-        output_weight_init_strategy=NeuralNetwork.WeightInitStrategy.ZERO,
+        hidden_weight_init_strategy=NeuralNetwork.WeightInitStrategy.HE_UNIFORM,
+        output_weight_init_strategy=NeuralNetwork.WeightInitStrategy.HE_UNIFORM,
         bias_init_strategy=NeuralNetwork.BiasInitStrategy.ZERO,
         
     )
@@ -1781,7 +1808,7 @@ if __name__ == "__main__":
     cfg.step = 100
     cfg.epochs = 1000
     cfg.batch_size = 4
-    cfg.learning_rate = 0.1
+    cfg.learning_rate = 0.01
     
     # X_train = X_train[:limit]
     # Y_train = Y_train[:limit]
@@ -1807,9 +1834,9 @@ if __name__ == "__main__":
         l2=False, 
         dropout=False,
         graph=True,
-        real_time_tracking=False,
-        _log_predictions=True,
-        optimizer_type=NeuralNetwork.Optimizers.ADAM
+        real_time_tracking=True,
+        _log_predictions=False,
+        optimizer_type=NeuralNetwork.Optimizers.MOMENTUM
     )
     
     # model.save_model("mnist_small")
