@@ -4,6 +4,7 @@ import os
 import csv
 import copy
 import json
+import math
 import pickle
 import matplotlib.pyplot as plt
 
@@ -79,6 +80,8 @@ class NeuralNetwork:
     class Optimizers(Enum):
         GDC = 1
         MOMENTUM = 2
+        RMS_PROP = 3
+        ADAM = 4
     
     class Datasets(Enum):
         NPZ = 1
@@ -107,6 +110,7 @@ class NeuralNetwork:
         output_aware_multiplier: int = 4
         expansion_multiplier: int = 2
         momentum_coefficient: float = 0.9
+        rms_coefficient: float = 0.999
         prediction_tolerance: int = 100
         prediction_threshold: int = 1000
         default_format_version: str = "1.0.0"
@@ -896,7 +900,16 @@ class NeuralNetwork:
         self.velocity_dW[layer] = momentum_coefficient * self.velocity_dW[layer] + (1 - momentum_coefficient) * dW
         self.velocity_db[layer] = momentum_coefficient * self.velocity_db[layer] + (1 - momentum_coefficient) * db
     
-    def init_optimizer_state(self):
+    def rms_prop(self, grads, layer, cfg=None):
+        if cfg is None:
+            cfg = self.TrainDefaults()
+        rms_coefficient = cfg.rms_coefficient
+        
+        dW, db = grads
+        self.rms_dW[layer] = rms_coefficient * self.rms_dW[layer] + (1 - rms_coefficient) * (dW*dW)
+        self.rms_db[layer] = rms_coefficient * self.rms_db[layer] + (1 - rms_coefficient) * (db*db)
+
+    def init_momentum_state(self):
         xp = self.xp
         self.velocity_dW = []
         self.velocity_db = []
@@ -904,7 +917,16 @@ class NeuralNetwork:
             self.velocity_dW.append(xp.zeros_like(W))
             self.velocity_db.append(xp.zeros_like(b))
 
+    def init_rms_state(self):
+        xp = self.xp
+        self.rms_dW = []
+        self.rms_db = []
+        for W, b in self.__WB:
+            self.rms_dW.append(xp.zeros_like(W))
+            self.rms_db.append(xp.zeros_like(b))
+
     def optimizer(self, grads, learning_rate, optimizer_type=None, cfg=None):
+        xp = self.xp
         if cfg is None:
             cfg = self.TrainDefaults()
         if optimizer_type is None:
@@ -918,11 +940,28 @@ class NeuralNetwork:
                     self.update_parameters(W, b, dW, db, learning_rate, l)
                 case self.Optimizers.MOMENTUM:
                     if not hasattr(self, "velocity_dW") or not hasattr(self, "velocity_db"):
-                        self.init_optimizer_state()
+                        self.init_momentum_state()
                     self.momentum(grads[l], l, cfg)
                     self.update_parameters(W, b, self.velocity_dW[l], self.velocity_db[l], learning_rate, l)
+                case self.Optimizers.RMS_PROP:
+                    if not hasattr(self, "rms_dW") or not hasattr(self, "rms_db"):
+                        self.init_rms_state()
+                    dW, db = grads[l]
+                    self.rms_prop((dW, db), l, cfg)
+                    epsilon = cfg.epsilon
+                    self.update_parameters(W, b, dW/(xp.sqrt(self.rms_dW[l]) + epsilon), db/(xp.sqrt(self.rms_db[l]) + epsilon), learning_rate, l)
+                case self.Optimizers.ADAM:
+                    if not hasattr(self, "velocity_dW") or not hasattr(self, "velocity_db"):
+                        self.init_momentum_state()
+                    if not hasattr(self, "rms_dW") or not hasattr(self, "rms_db"):
+                        self.init_rms_state()
+                    dW, db = grads[l]
+                    self.momentum((dW, db), l, cfg)
+                    self.rms_prop((dW, db), l, cfg)
+                    epsilon = cfg.epsilon
+                    self.update_parameters(W, b, self.velocity_dW[l]/(xp.sqrt(self.rms_dW[l]) + epsilon), self.velocity_db[l]/(xp.sqrt(self.rms_db[l]) + epsilon), learning_rate, l)
                 case _:
-                    raise ValueError(f"Invalid Optimizer, supported values are : {self.Optimizers.MOMENTUM.name}")
+                    raise ValueError(f"Invalid Optimizer, supported values are : {self.Optimizers.MOMENTUM.name}, {self.Optimizers.RMS_PROP}, {self.Optimizers.ADAM}")
 
     def update_parameters(self, W, b, dW, db, learning_rate, layer):
         self.__WB[layer] = (W - learning_rate * dW,
@@ -1044,7 +1083,7 @@ class NeuralNetwork:
         current_lr = learning_rate
         initial_lr = learning_rate
 
-        losses = []
+        train_losses = []
         val_losses = []
         val_accuracies = []
         best_epoch = None
@@ -1133,9 +1172,6 @@ class NeuralNetwork:
             val_data_loss_py = self.scalar_to_python(val_data_loss)
             val_acc_py = self.scalar_to_python(val_acc)
             
-            val_losses.append(val_data_loss_py)
-            val_accuracies.append(val_acc_py)
-
             if epoch >= 0 and epoch % step == 0:
                 if learning_decay_type is not None:
                     current_lr = self.learning_decay(initial_lr, decay_factor, epoch, step, learning_decay_type)
@@ -1151,12 +1187,15 @@ class NeuralNetwork:
                     )
 
                 if graph or real_time_tracking:
-                    losses.append(train_data_loss_py)
+                    train_losses.append(train_data_loss_py)
+                    val_losses.append(val_data_loss_py)
+                    val_accuracies.append(val_acc_py)
                     steps.append(epoch)
-                if not graph and real_time_tracking:
+                if real_time_tracking:
                     plt.ion()
                     plt.title(self.TrainResults.figure_title)
-                    plt.plot(steps, losses)
+                    plt.plot(steps, train_losses, label='Train Loss')
+                    plt.plot(steps, val_losses, label='Validation Loss')
                     plt.xlabel("iteration")
                     plt.ylabel("loss")
                     plt.pause(0.05)
@@ -1193,7 +1232,7 @@ class NeuralNetwork:
                 print("Test :", test_loss, test_acc)
         
         train_results = self.TrainResults(
-            losses=losses, 
+            losses=train_losses, 
             val_losses=val_losses, 
             best_val_loss=best_val_loss, 
             val_accuracies=val_accuracies, 
@@ -1223,9 +1262,11 @@ class NeuralNetwork:
             if Y_test is not None and test_pred is not None:
                 self.log_predictions(Y_test, test_pred, _log_predictions, test_prediction_file, prediction_path, prediction_tolerance, prediction_threshold, _encoding)
         
-        if graph and not real_time_tracking:
+        if graph:
+            plt.ioff()
             plt.title(self.TrainResults.figure_title)
-            plt.plot(steps, losses)
+            plt.plot(steps, train_losses, label='Train Loss')
+            plt.plot(steps, val_losses, label='Validation Loss')
             plt.xlabel("iteration")
             plt.ylabel("loss")
             plt.show()
@@ -1706,7 +1747,7 @@ if __name__ == "__main__":
     # layers = [4, 1, number_of_classes]
     layers = NeuralNetwork.init_layers(
         X=X_train,
-        number_of_hidden_layers=10,
+        number_of_hidden_layers=3,
         output_width=number_of_classes
     )
     
@@ -1716,7 +1757,11 @@ if __name__ == "__main__":
         loss_type=NeuralNetwork.LossType.BINARY_CROSS_ENTROPY,
         output_activation_type=NeuralNetwork.OutputActivationType.SIGMOID,
         hidden_activation_type=NeuralNetwork.HiddenActivationType.RELU,
-        device=NeuralNetwork.Device.CPU
+        device=NeuralNetwork.Device.CPU,
+        hidden_weight_init_strategy=NeuralNetwork.WeightInitStrategy.ZERO,
+        output_weight_init_strategy=NeuralNetwork.WeightInitStrategy.ZERO,
+        bias_init_strategy=NeuralNetwork.BiasInitStrategy.ZERO,
+        
     )
     
     # model.summary()
@@ -1736,7 +1781,7 @@ if __name__ == "__main__":
     cfg.step = 100
     cfg.epochs = 1000
     cfg.batch_size = 4
-    cfg.learning_rate = 0.01
+    cfg.learning_rate = 0.1
     
     # X_train = X_train[:limit]
     # Y_train = Y_train[:limit]
@@ -1763,8 +1808,8 @@ if __name__ == "__main__":
         dropout=False,
         graph=True,
         real_time_tracking=False,
-        _log_predictions=False,
-        optimizer_type=NeuralNetwork.Optimizers.MOMENTUM
+        _log_predictions=True,
+        optimizer_type=NeuralNetwork.Optimizers.ADAM
     )
     
     # model.save_model("mnist_small")
