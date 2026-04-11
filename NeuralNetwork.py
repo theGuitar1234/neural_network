@@ -128,6 +128,26 @@ class NeuralNetwork:
         figure_title: str = "Training Results"
     
     @dataclass
+    class ConfusionMatrix:
+        TP: str = "TP"
+        FP: str = "FP"
+        TN: str = "TN"
+        FN: str = "FN"
+        space: int = " "
+        padding: int = 1
+    
+    @dataclass
+    class ErrorAnalysis:
+        tp: str = "True Positives"
+        fp: str = "False Positives"
+        tn: str = "True Negatives"
+        fn: str = "False Negatives"
+        acc: str = "Accuracy"
+        per: str = "Percision"
+        rec: str = "Recall"
+        f1: str = "F1 Score"
+                    
+    @dataclass
     class Paths:
         model_path: str = "models/"
         csv_path: str = "data/csv/"
@@ -136,9 +156,13 @@ class NeuralNetwork:
         pickle_path: str = "data/pickle/"
         default_data: str = "Untitled"
         prediction_path: str = "data/prediction/"
+        error_analysis_path: str = "data/error_analysis/"
+        confusion_matrix_path: str = "data/confusion_matrix/"
         test_prediction_file: str = "test_predictions"
         validation_prediction_file: str = "validation_predictions"
         train_prediction_file: str = "train_predictions"
+        error_analysis_file: str = "error_analysis"
+        confusion_matrix_file: str = "confusion_matrix"
     
     @dataclass
     class Extensions:
@@ -152,7 +176,23 @@ class NeuralNetwork:
     class Encodings:
         UTF_8: str = "utf_8"
 
-    def __init__(self, number_of_features, layers, loss_type=None, output_activation_type=None, hidden_activation_type=None, hidden_weight_init_strategy=None, output_weight_init_strategy=None, bias_init_strategy=None, init_seed=None, init_random_range=None, hidden_bias_value=0.0, output_positive_prior=None, device=Device.CPU):
+    def __init__(
+        self, 
+        number_of_features,
+        number_of_classes,
+        layers, 
+        loss_type=None, 
+        output_activation_type=None, 
+        hidden_activation_type=None, 
+        hidden_weight_init_strategy=None, 
+        output_weight_init_strategy=None, 
+        bias_init_strategy=None, 
+        init_seed=None, 
+        init_random_range=None, 
+        hidden_bias_value=0.0, 
+        output_positive_prior=None, 
+        device=Device.CPU
+    ):
         if type(number_of_features) is not int:
             raise TypeError("number_of_features must be an integer")
         if number_of_features < 1:
@@ -251,6 +291,8 @@ class NeuralNetwork:
         else:
             self.__init_random_range = init_random_range if init_random_range is not None else np.random.default_rng(init_seed)
 
+        self.__number_of_features = number_of_features
+        self.__number_of_classes = number_of_classes
         self.__L = len(layers)
         self.__cache = []
         self.__WB = []
@@ -1046,7 +1088,7 @@ class NeuralNetwork:
         Y_valid,
         X_test,
         Y_test,
-        log=False,
+        _log=False,
         graph=False,
         real_time_tracking=False,
         finalize=False,
@@ -1055,10 +1097,15 @@ class NeuralNetwork:
         restore_best=False, 
         dropout=False,
         l2=False,
+        error_analysis=False,
+        _log_error_analysis=False,
+        _log_confusion_matrix=False,
+        error_analysis_file=None, 
+        error_analysis_path=None,
         cfg=None, 
         learning_decay_type=None,
         data_augmentation_type=None,
-        optimizer_type=None
+        optimizer_type=None,
     ):
         xp = self.xp
         if X_train.ndim != 2:
@@ -1126,7 +1173,7 @@ class NeuralNetwork:
             raise ValueError("learning_rate must be positive")
         if not (0.0 <= drop_out_rate < 1.0):
             raise ValueError("drop_out_rate must be in [0.0, 1.0)")
-        if log or graph:
+        if _log or graph:
             if type(step) is not int:
                 raise TypeError("step must be an integer")
             if step < 1 or step > epochs:
@@ -1203,7 +1250,7 @@ class NeuralNetwork:
                 if learning_decay_type is not None:
                     current_lr = self.learning_decay(initial_lr, decay_factor, epoch, step, learning_decay_type)
 
-                if log:
+                if _log:
                     print(
                         "epoch =", epoch,
                         "train_data_loss =", round(train_data_loss_py, 6),
@@ -1257,6 +1304,19 @@ class NeuralNetwork:
             if X_test is not None and Y_test is not None:
                 test_pred, test_loss, test_acc = self.evaluate_dataset(X_test, Y_test)
                 print("Test :", test_loss, test_acc)
+                
+                if error_analysis:
+                    print("\nError analysis : ")
+                    true_labels = xp.argmax(Y_test, axis=1)
+                    prediction_labels = xp.argmax(test_pred, axis=1)
+                    for i in range(0, self.__number_of_classes):
+                        error_analysis_result = self.error_analysis(
+                            self.confusion_matrix(i, true_labels, prediction_labels, _log_confusion_matrix, error_analysis_file, error_analysis_path),
+                            _log_error_analysis,
+                            error_analysis_file, 
+                            error_analysis_path
+                        )
+                        print(error_analysis_result)
         
         train_results = self.TrainResults(
             losses=train_losses, 
@@ -1317,9 +1377,8 @@ class NeuralNetwork:
                     prediction = predictions[i]
                     sample_result = np.where(sample == 1)[0]
                     prediction_result = np.where(prediction == 1)[0]
-                    f.write(f"Sample : {sample_result}, Prediction : {prediction_result} {"correct" if sample_result == prediction_result else "failed"}\n")
-                
-            print(f"\nFirst <{prediction_threshold} predictions are written in {prediction_file_path}")  
+                    f.write(f"Sample : {sample_result}, Prediction : {prediction_result} {"correct" if sample_result == prediction_result else "failed"}\n")  
+            print(f"\nFirst <{prediction_threshold} predictions are written in {prediction_file_path}\n")  
         else:
             first_sample, last_sample, first_prediction, last_prediction = Y[0], Y[-1], predictions[0], predictions[-1]
             print("Detailed Prediction Logging disabled, falling back to the first and last sample predictions : ")
@@ -1388,6 +1447,135 @@ class NeuralNetwork:
     def predict(self, x):
         A, cache, _, _ = self.forward_pass(x, training_mode=False)
         return A, cache
+
+    def error_analysis(
+        self, 
+        confusion_matrix, 
+        _log_error_analysis=False,
+        error_analysis_file=None, 
+        error_analysis_path=None
+    ):
+        TP = confusion_matrix[0]
+        TN = confusion_matrix[1]
+        FP = confusion_matrix[2]
+        FN = confusion_matrix[3]
+
+        total = sum(confusion_matrix)
+
+        percision = TP / (TP + FP)
+        recall = TP / (TP + FN)
+        
+        tp = self.ErrorAnalysis().tp
+        fp = self.ErrorAnalysis().fp
+        tn = self.ErrorAnalysis().tn
+        fn = self.ErrorAnalysis().fn
+        f1 = self.ErrorAnalysis().f1
+        acc = self.ErrorAnalysis().acc
+        per = self.ErrorAnalysis().per
+        rec = self.ErrorAnalysis().rec
+        
+        if _log_error_analysis:
+            _error_analysis_log = f"""{tp}: {TP}\n{fp}: {TN}\n{tn}: {FP}\n{fn}: {FN}\n{acc}: {(TP + TN) / total}\n{per}: {percision}\n{rec}: {recall}\n{f1}: {2 * (percision * recall) / (percision + recall)}"""
+            
+            print(f"\n{_error_analysis_log}\n")
+            
+            if error_analysis_file is None:
+                error_analysis_file = self.Paths().error_analysis_file
+                error_analysis_path = self.Paths().error_analysis_path
+            if not os.path.exists(error_analysis_path):
+                os.mkdir(error_analysis_path)
+            error_analysis_full_path = error_analysis_path + error_analysis_file + self.Extensions().text
+            with open(error_analysis_full_path, "a") as f:
+                f.write(f"\n\nModel Train Error Analysis for date : {datetime.utcnow().isoformat() + "Z"}\n\n")
+                f.write(_error_analysis_log)
+            print(f"\nError Analysis Are written to : {error_analysis_full_path}\n")
+
+        return {
+            tp: TP,
+            fp: FP,
+            tn: TN,
+            fn: FN,
+            acc: (TP + TN) / total,
+            per: percision,
+            rec: recall,
+            f1: 2 * (percision * recall) / (percision + recall),
+        }
+    
+    def confusion_matrix(
+        self, 
+        OvR, 
+        true_labels, 
+        prediction_labels, 
+        _log_confusion_matrix=False, 
+        confusion_matrix_file=None, 
+        confusion_matrix_path=None
+    ):
+        if _log_confusion_matrix:
+            self.log_confusion_matrix(OvR, confusion_matrix_file, confusion_matrix_path)
+        
+        num_TP = 0
+        num_TN = 0
+        num_FP = 0
+        num_FN = 0
+
+        for i in range(len(prediction_labels)):
+            if prediction_labels[i] == OvR and true_labels[i] == OvR:
+                num_TP += 1
+            elif prediction_labels[i] != OvR and true_labels[i] != OvR:
+                num_TN += 1
+            elif prediction_labels[i] == OvR and true_labels[i] != OvR:
+                num_FP += 1
+            elif prediction_labels[i] != OvR and true_labels[i] == OvR:
+                num_FN += 1
+            else:
+                raise ValueError("Invalid Case in confusion_matrix(), something went wrong")
+        return (num_TP, num_TN, num_FP, num_FN)
+    
+    def log_confusion_matrix(self, OvR, confusion_matrix_file=None, confusion_matrix_path=None):
+        confusion_matrix_str = ""
+        confusion_matrix_list = []
+
+        space = self.ConfusionMatrix().space
+        padding = self.ConfusionMatrix().padding
+        for i in range(self.__number_of_classes):
+            row = []
+            for j in range(self.__number_of_classes):
+                if (i == OvR and j == OvR):
+                    TP = self.ConfusionMatrix().TP
+                    confusion_matrix_str += TP + padding*space
+                    row.append(TP)
+                elif (i != OvR and j != OvR):
+                    TN = self.ConfusionMatrix().TN
+                    confusion_matrix_str += TN + padding*space
+                    row.append(TN)
+                elif (i != OvR and j == OvR):
+                    FP = self.ConfusionMatrix().FP
+                    confusion_matrix_str += FP + padding*space
+                    row.append(FP)
+                elif (i == OvR and j != OvR):
+                    FN = self.ConfusionMatrix().FN
+                    confusion_matrix_str += FN + padding*space
+                    row.append(FN)
+                else:
+                    raise ValueError("Invalid Case in log_confusion_matrix(), something went wrong")
+            confusion_matrix_str += "\n"
+            confusion_matrix_list.append(row)
+        
+        _confustion_matrix_log = f"""Confusion Matrix for class : {OvR}\n{confusion_matrix_str}\nList Representation for class : {OvR}\n{confusion_matrix_list}"""
+        print()
+        print(f"\n{_confustion_matrix_log}\n")
+        print()
+        
+        if confusion_matrix_file is None:
+            confusion_matrix_file = self.Paths().confusion_matrix_file
+            confusion_matrix_path = self.Paths().confusion_matrix_path
+        if not os.path.exists(confusion_matrix_path):
+            os.mkdir(confusion_matrix_path)
+        confusion_matrix_full_path = confusion_matrix_path + confusion_matrix_file + self.Extensions().text
+        with open(confusion_matrix_full_path, "a") as f:
+            f.write(f"\n\nModel Train Confusion Matrices for date : {datetime.utcnow().isoformat() + "Z"}\n\n")
+            f.write(_confustion_matrix_log)
+        print(f"\nError Analysis Are written to : {confusion_matrix_path}\n")
 
     def data_augmentation(self, X, Y, augmentation_type, random_range=None):
         xp = self.xp
@@ -1506,23 +1694,27 @@ class NeuralNetwork:
         file_path = modelpath + file_name
         with open(file_path, "wb") as f:
             pickle.dump(model_cpu, f)
+        print(f"\nSaved the Model to : {file_path}\n")
         
         if meta:
             meta_data = self.get_metadata(format_version, train_history)
             meta_data_path = modelpath + file_name + self.Paths.meta_data_flair 
             with open(meta_data_path, "wb") as f:
                 pickle.dump(meta_data, f)
+            print(f"\nSaved Meta Data at : {meta_data_path}\n")
 
     @classmethod
     def load_model(cls, model_path, meta_data_path, device=None, meta=False):
         with open(model_path, "rb") as f:
             model = pickle.load(f)
+        print(f"Loaded Model from : {model_path}\n")
         if device is not None:
             model.move_to(device)
         meta_data = None
         if meta:
             with open(meta_data_path, "rb") as f:
                 meta_data = pickle.load(f)
+            print(f"Loaded Meta data from : {meta_data_path}\n")
         return model, meta_data
     
     @classmethod
@@ -1593,6 +1785,7 @@ class NeuralNetwork:
             
             for x_row, y_value in zip(X, Y):
                 writer.writerow(list(map(float, x_row)) + [int(y_value)])
+        print(f"\nSaved data to CSV at : {filepath}\n")
     
     @classmethod
     def load_from_csv(cls, filepath, _newline="", _encoding=None):
@@ -1603,6 +1796,7 @@ class NeuralNetwork:
             header = next(reader)
             
             rows = list(reader)
+        print(f"\nLoaded a CSV dataset from : {filepath}\n")
             
         data = np.array(rows, dtype=np.float32)
         
@@ -1645,6 +1839,7 @@ class NeuralNetwork:
 
         with open(filepath, "w", encoding=_encoding) as f:
             json.dump(json_data, f)
+        print(f"\nSaved data to JSON at : {filepath}\n")
     
     @classmethod
     def records_to_split(cls, records):
@@ -1659,6 +1854,7 @@ class NeuralNetwork:
             
         with open(filepath, "r", encoding=_encoding) as f:
             data = json.load(f)
+        print(f"Loaded data from JSON at : {filepath}\n")
         
         X_train, Y_train = cls.records_to_split(data["train"])
         X_valid, Y_valid = cls.records_to_split(data["valid"])
@@ -1687,11 +1883,13 @@ class NeuralNetwork:
         
         with open(filepath, "wb") as f:
             pickle.dump(dataset, f)
+        print(f"\nSaved data to Pickle at : {pickle_file_path}\n")
     
     @classmethod
     def load_from_pickle(cls, filepath):
         with open(filepath, "rb") as f:
             dataset = pickle.load(f)
+        print(f"\nLoaded data from Pickle at : {filepath}\n")
         return dataset
 
     @classmethod
@@ -1780,15 +1978,15 @@ if __name__ == "__main__":
     
     model = NeuralNetwork(
         number_of_features,
+        number_of_classes,
         layers,
         loss_type=NeuralNetwork.LossType.BINARY_CROSS_ENTROPY,
         output_activation_type=NeuralNetwork.OutputActivationType.SIGMOID,
-        hidden_activation_type=NeuralNetwork.HiddenActivationType.LEAKY_RELU,
+        hidden_activation_type=NeuralNetwork.HiddenActivationType.TANH,
         device=NeuralNetwork.Device.CPU,
         hidden_weight_init_strategy=NeuralNetwork.WeightInitStrategy.HE_UNIFORM,
         output_weight_init_strategy=NeuralNetwork.WeightInitStrategy.HE_UNIFORM,
-        bias_init_strategy=NeuralNetwork.BiasInitStrategy.ZERO,
-        
+        bias_init_strategy=NeuralNetwork.BiasInitStrategy.ZERO
     )
     
     # model.summary()
@@ -1805,7 +2003,7 @@ if __name__ == "__main__":
     cfg = NeuralNetwork.TrainDefaults()
     
     # limit = 101
-    cfg.step = 100
+    cfg.step = 10
     cfg.epochs = 1000
     cfg.batch_size = 4
     cfg.learning_rate = 0.01
@@ -1827,7 +2025,7 @@ if __name__ == "__main__":
         learning_decay_type=None,
         data_augmentation_type=None,
         cfg=cfg,
-        log=True,
+        _log=True,
         early_stopping=False,
         restore_best=False,
         finalize=True, 
@@ -1836,7 +2034,10 @@ if __name__ == "__main__":
         graph=True,
         real_time_tracking=True,
         _log_predictions=False,
-        optimizer_type=NeuralNetwork.Optimizers.MOMENTUM
+        error_analysis=True,
+        _log_confusion_matrix=False,
+        _log_error_analysis=False,
+        optimizer_type=NeuralNetwork.Optimizers.GDC
     )
     
     # model.save_model("mnist_small")
