@@ -1,0 +1,55 @@
+
+
+Model Train Confusion Matrices for date : 2026-05-15T10:18:09.682189Z
+
+Confusion Matrix for class : 0
+TP FN 
+FP TN 
+
+List Representation for class : 0
+[['TP', 'FN'], ['FP', 'TN']]
+
+Model Train Confusion Matrices for date : 2026-05-15T10:18:09.686252Z
+
+Confusion Matrix for class : 1
+TN FP 
+FN TP 
+
+List Representation for class : 1
+[['TN', 'FP'], ['FN', 'TP']]
+
+Model Train Confusion Matrices for date : 2026-05-15T10:21:13.715074Z
+
+Confusion Matrix for class : 0
+TP FN 
+FP TN 
+
+List Representation for class : 0
+[['TP', 'FN'], ['FP', 'TN']]
+
+Model Train Confusion Matrices for date : 2026-05-15T10:21:13.716309Z
+
+Confusion Matrix for class : 1
+TN FP 
+FN TP 
+
+List Representation for class : 1
+[['TN', 'FP'], ['FN', 'TP']]
+
+Model Train Confusion Matrices for date : 2026-05-15T10:22:15.493581Z
+
+Confusion Matrix for class : 0
+TP FN 
+FP TN 
+
+List Representation for class : 0
+[['TP', 'FN'], ['FP', 'TN']]
+
+Model Train Confusion Matrices for date : 2026-05-15T10:22:15.495104Z
+
+Confusion Matrix for class : 1
+TN FP 
+FN TP 
+
+List Representation for class : 1
+[['TN', 'FP'], ['FN', 'TP']]

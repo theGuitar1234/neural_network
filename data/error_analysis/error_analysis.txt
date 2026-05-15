@@ -1,0 +1,115 @@
+
+
+Model Train Error Analysis for date : 2026-05-15T10:18:09.683368Z
+
+True Positives: 5
+False Positives: 10
+True Negatives: 0
+False Negatives: 0
+Accuracy: 1.0
+Percision: 1.0
+Recall: 1.0
+F1 Score: 1.0, 
+Specificity: 2.0, 
+False Positive Rate: -1.0, 
+False Negative Rate: 0.0, 
+True Negative Rate: 2.0, 
+True Positive Rate: 1.0, 
+Matthews Correlation Coefficient MCC: 1.0, 
+Jaccart Index IoU: 1.0, 
+Balanced Accuracy: 1.5
+
+Model Train Error Analysis for date : 2026-05-15T10:18:09.687339Z
+
+True Positives: 10
+False Positives: 5
+True Negatives: 0
+False Negatives: 0
+Accuracy: 1.0
+Percision: 1.0
+Recall: 1.0
+F1 Score: 1.0, 
+Specificity: 0.5, 
+False Positive Rate: 0.5, 
+False Negative Rate: 0.0, 
+True Negative Rate: 0.5, 
+True Positive Rate: 1.0, 
+Matthews Correlation Coefficient MCC: 1.0, 
+Jaccart Index IoU: 1.0, 
+Balanced Accuracy: 0.75
+
+Model Train Error Analysis for date : 2026-05-15T10:21:13.715844Z
+
+True Positives: 100
+False Positives: 200
+True Negatives: 0
+False Negatives: 0
+Accuracy: 1.0
+Percision: 1.0
+Recall: 1.0
+F1 Score: 1.0, 
+Specificity: 2.0, 
+False Positive Rate: -1.0, 
+False Negative Rate: 0.0, 
+True Negative Rate: 2.0, 
+True Positive Rate: 1.0, 
+Matthews Correlation Coefficient MCC: 1.0, 
+Jaccart Index IoU: 1.0, 
+Balanced Accuracy: 1.5
+
+Model Train Error Analysis for date : 2026-05-15T10:21:13.718166Z
+
+True Positives: 200
+False Positives: 100
+True Negatives: 0
+False Negatives: 0
+Accuracy: 1.0
+Percision: 1.0
+Recall: 1.0
+F1 Score: 1.0, 
+Specificity: 0.5, 
+False Positive Rate: 0.5, 
+False Negative Rate: 0.0, 
+True Negative Rate: 0.5, 
+True Positive Rate: 1.0, 
+Matthews Correlation Coefficient MCC: 1.0, 
+Jaccart Index IoU: 1.0, 
+Balanced Accuracy: 0.75
+
+Model Train Error Analysis for date : 2026-05-15T10:22:15.494440Z
+
+True Positives: 100
+False Positives: 200
+True Negatives: 0
+False Negatives: 0
+Accuracy: 1.0
+Percision: 1.0
+Recall: 1.0
+F1 Score: 1.0, 
+Specificity: 2.0, 
+False Positive Rate: -1.0, 
+False Negative Rate: 0.0, 
+True Negative Rate: 2.0, 
+True Positive Rate: 1.0, 
+Matthews Correlation Coefficient MCC: 1.0, 
+Jaccart Index IoU: 1.0, 
+Balanced Accuracy: 1.5
+
+Model Train Error Analysis for date : 2026-05-15T10:22:15.495583Z
+
+True Positives: 200
+False Positives: 100
+True Negatives: 0
+False Negatives: 0
+Accuracy: 1.0
+Percision: 1.0
+Recall: 1.0
+F1 Score: 1.0, 
+Specificity: 0.5, 
+False Positive Rate: 0.5, 
+False Negative Rate: 0.0, 
+True Negative Rate: 0.5, 
+True Positive Rate: 1.0, 
+Matthews Correlation Coefficient MCC: 1.0, 
+Jaccart Index IoU: 1.0, 
+Balanced Accuracy: 0.75
